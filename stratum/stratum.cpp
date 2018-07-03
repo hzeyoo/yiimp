@@ -32,7 +32,7 @@ char g_stratum_algo[256];
 double g_stratum_difficulty;
 
 int g_stratum_max_ttf;
-int g_stratum_max_cons = 5000;
+int g_stratum_max_cons = 65535;
 bool g_stratum_reconnect;
 bool g_stratum_renting;
 bool g_stratum_segwit = false;
@@ -253,7 +253,7 @@ int main(int argc, char **argv)
 
 	strcpy(g_stratum_algo, iniparser_getstring(ini, "STRATUM:algo", NULL));
 	g_stratum_difficulty = iniparser_getdouble(ini, "STRATUM:difficulty", 16);
-	g_stratum_max_cons = iniparser_getint(ini, "STRATUM:max_cons", 5000);
+	g_stratum_max_cons = iniparser_getint(ini, "STRATUM:max_cons", 65535);
 	g_stratum_max_ttf = iniparser_getint(ini, "STRATUM:max_ttf", 0x70000000);
 	g_stratum_reconnect = iniparser_getint(ini, "STRATUM:reconnect", true);
 	g_stratum_renting = iniparser_getint(ini, "STRATUM:renting", true);
