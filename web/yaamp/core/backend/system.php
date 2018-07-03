@@ -6,9 +6,9 @@ function BackendDoBackup()
 	$filename = "/root/backup/yaamp-$d.sql";
 
 	if (is_readable("/usr/bin/xz")) {
-		$ziptool = "xz"; $filename .= ".xz";
+		$ziptool = "xz --threads=4"; $ext = ".xz";
 	} else {
-		$ziptool = "gzip"; $filename .= ".gz";
+		$ziptool = "gzip"; $ext = ".gz";
 	}
 
 	include_once("/etc/yiimp/keys.php");
@@ -19,7 +19,14 @@ function BackendDoBackup()
 	$user = YIIMP_MYSQLDUMP_USER;
 	$pass = YIIMP_MYSQLDUMP_PASS;
 
-	system("mysqldump -h $host -u$user -p$pass --skip-extended-insert $db | $ziptool > $filename");
+	if (1) {
+		// faster on huge databases if the disk is fast (nvme), reduce the db lock time
+		system("mysqldump -h $host -u$user -p$pass --skip-extended-insert $db > $filename");
+		shell_exec("$ziptool $filename &"); // compress then the .sql in background (db is no more locked)
+	} else {
+		// previous method (ok on small pools)
+		system("mysqldump -h $host -u$user -p$pass --skip-extended-insert $db | $ziptool > $filename$ext");
+	}
 }
 
 function BackendQuickClean()
@@ -87,6 +94,42 @@ function marketHistoryPrune($symbol="")
 	if ($nbDel) debuglog("history: $nbDel records pruned, $nbUpd updated $symbol");
 }
 
+function consolidateOldShares()
+{
+	$delay = time() - 24*60*60; // drop invalid shares not used anymore (24h graph only)
+	dborun("DELETE FROM shares WHERE time < $delay AND valid = 0");
+
+	$t1 = time() - 48*3600;
+	$list = dbolist("SELECT coinid, userid, workerid, algo, AVG(time) AS time, SUM(difficulty) AS difficulty, AVG(share_diff) AS share_diff ".
+		"FROM shares WHERE valid AND time < $t1 AND pid > 0 ".
+		"GROUP BY coinid, userid, workerid, algo ORDER BY coinid, userid");
+	$pruned = 0;
+	foreach ($list as $row) {
+		$share = new db_shares;
+		$share->isNewRecord = true;
+		$share->coinid = $row['coinid'];
+		$share->userid = $row['userid'];
+		$share->workerid = $row['workerid'];
+		$share->algo = $row['algo'];
+		$share->time = (int) $row['time'];
+		$share->difficulty = $row['difficulty'];
+		$share->share_diff = $row['share_diff'];
+		$share->valid = 1;
+		$share->pid = 0;
+		if ($share->save()) {
+			$pruned += dborun("DELETE FROM shares WHERE userid=:userid AND coinid=:coinid AND workerid=:worker AND pid > 0 AND time < $t1", array(
+				':userid' => $row['userid'],
+				':coinid' => $row['coinid'],
+				':worker' => $row['workerid'],
+			));
+		}
+	}
+	if ($pruned) {
+		debuglog("$pruned old shares records were consolidated");
+	}
+	return $pruned;
+}
+
 function BackendCleanDatabase()
 {
 	marketHistoryPrune();
@@ -106,6 +149,8 @@ function BackendCleanDatabase()
 	dborun("delete from balanceuser where time<$delay");
 	dborun("delete from exchange where send_time<$delay");
 	dborun("DELETE FROM shares WHERE time<$delay AND coinid NOT IN (select id from coins)");
+
+	consolidateOldShares();
 
 	$delay = time() - 12*60*60;
 	dborun("delete from earnings where status=2 and mature_time<$delay");

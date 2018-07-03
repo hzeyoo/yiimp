@@ -37,6 +37,8 @@ class db_coins extends CActiveRecord
 			'txfee'		=> 'Tx Fee',
 			'program'	=> 'Process name',
 			'conf_folder'	=> 'Conf. folder',
+			'mature_blocks' => 'PoW Confirmations',
+			'powend_height' => 'End of PoW',
 			'rpchost'	=> 'RPC Host',
 			'rpcport'	=> 'RPC Port',
 			'rpcuser'	=> 'RPC User',
@@ -47,18 +49,25 @@ class db_coins extends CActiveRecord
 			'serveruser'	=> 'Server user',
 			'hassubmitblock'=> 'Has submitblock',
 			'hasmasternodes'=> 'Masternodes',
+			'usesegwit'	=> 'Use segwit',
 			'market'	=> 'Preferred market',
 			'rpcencoding'	=> 'RPC Type',
 			'specifications'=> 'Notes'
 		);
 	}
 
-	public function getSymbol_show()
+	public function getOfficialSymbol()
 	{
 		if(!empty($this->symbol2))
 			return $this->symbol2;
 		else
 			return $this->symbol;
+	}
+
+	public function getSymbol_show()
+	{
+		// virtual property $coin->symbol_show
+		return $this->getOfficialSymbol();
 	}
 
 	public function deleteDeps()

@@ -136,8 +136,21 @@ bool coind_validate_address(YAAMP_COIND *coind)
 	const char *acc = json_get_string(json_result, "account");
 	if (acc) strcpy(coind->account, acc);
 
+	if (!base58_decode(coind->wallet, coind->script_pubkey))
+		stratumlog("Warning: unable to decode %s %s script pubkey\n", coind->symbol, coind->wallet);
+
+	// if base58 decode fails
+	if (!strlen(coind->script_pubkey)) {
+		const char *pk = json_get_string(json_result, "scriptPubKey");
+		if (pk && strlen(pk) > 10) {
+			strcpy(coind->script_pubkey, &pk[6]);
+			coind->script_pubkey[strlen(pk)-6-4] = '\0';
+			stratumlog("%s %s extracted script pubkey is %s\n", coind->symbol, coind->wallet, coind->script_pubkey);
+		} else {
+			stratumlog("%s wallet addr '%s' seems incorrect!'", coind->symbol, coind->wallet);
+		}
+	}
 	json_value_free(json);
-	base58_decode(coind->wallet, coind->script_pubkey);
 
 	return isvalid && ismine;
 }

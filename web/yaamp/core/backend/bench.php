@@ -6,7 +6,17 @@ function BenchUpdateChips()
 {
 	require_once(app()->getModulePath().'/bench/functions.php');
 
+	// some data cleanup tasks...
 	dborun("UPDATE benchmarks SET device=TRIM(device) WHERE type='cpu'");
+	dborun("UPDATE benchmarks SET power=NULL WHERE power<=3");
+	dborun("UPDATE benchmarks SET plimit=NULL WHERE plimit=0");
+	dborun("UPDATE benchmarks SET freq=NULL WHERE freq=0");
+	dborun("UPDATE benchmarks SET memf=NULL WHERE memf=0");
+	dborun("UPDATE benchmarks SET realmemf=NULL WHERE realmemf<=100");
+	dborun("UPDATE benchmarks SET realfreq=NULL WHERE realfreq<=200");
+	// bug in nvml 378.x and 381.x (linux + win) fixed in 382.05
+	dborun("UPDATE benchmarks SET realfreq=NULL WHERE realfreq<=200 AND driver LIKE '% 378.%'");
+	dborun("UPDATE benchmarks SET realfreq=NULL WHERE realfreq<=200 AND driver LIKE '% 381.%'");
 
 	$benchs = getdbolist('db_benchmarks', "IFNULL(chip,'')=''");
 	foreach ($benchs as $bench) {
@@ -16,7 +26,7 @@ function BenchUpdateChips()
 			array(':vid'=>$bench->vendorid, ':client'=>$bench->client, ':os'=>$bench->os, ':drv'=>$bench->driver,':thr'=>$bench->throughput,':uid'=>$bench->userid)
 		);
 		if ($dups > 10) {
-			debuglog("bench: {$bench->device} ignored ($dups records already present)");
+			//debuglog("bench: {$bench->device} ignored ($dups records already present)");
 			$bench->delete();
 			continue;
 		}

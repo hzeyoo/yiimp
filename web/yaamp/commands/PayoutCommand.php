@@ -29,19 +29,28 @@ class PayoutCommand extends CConsoleCommand
 		$this->basePath = str_replace(DIRECTORY_SEPARATOR, '/', $root);
 
 		$command = arraySafeVal($args,0);
-		$coinsym = arraySafeVal($args,1);
-		$fixit = arraySafeVal($args,2); // optional
 
-		if (!isset($args[1]) || empty($coinsym) || $args[1] == 'help') {
+		if (!isset($args[0]) || $args[0] == 'help') {
 
 			echo "Yiimp payout command\n";
 			echo "Usage: yiimp payout check <symbol> [fixit]\n";
+			echo "Usage:       payout coinswaps\n";
 			return 1;
 
 		} elseif ($command == 'check') {
 
+			if (!isset($args[1]))
+				die("Usage: yiimp payout check <symbol> [fixit]\n");
+
+			$coinsym = arraySafeVal($args,1);
+			$fixit = arraySafeVal($args,2); // optional
+
 			$nbUpdated  = $this->checkPayouts($coinsym, $fixit);
 			echo "total updated: $nbUpdated\n";
+			return 0;
+
+		} elseif ($command == 'coinswaps') {
+			$this->checkCoinSwaps($args);
 			return 0;
 		}
 	}
@@ -220,4 +229,38 @@ class PayoutCommand extends CConsoleCommand
 		return $nbCreated;
 	}
 
+	function checkCoinSwaps($args)
+	{
+		// check the last week
+		$since = time()-(7*24*3600);
+
+		$data = dbolist("SELECT C.symbol, C.algo, C2.symbol, C2.algo, A.username FROM payouts P ".
+			"INNER JOIN coins C ON P.idcoin=C.id ".
+			"INNER JOIN accounts A ON P.account_id = A.id ".
+			"INNER JOIN coins C2 ON A.coinid = C2.id ".
+			"WHERE P.time>$since AND A.coinid != P.idcoin"
+		);
+		if (!empty($data)) {
+			echo "user payouts to check:\n";
+			foreach ($data as $row) {
+				echo json_encode($row)."\n";
+			}
+		} else {
+			echo "payouts: all fine\n";
+		}
+
+		$data = dbolist("SELECT DISTINCT C.symbol, C.algo, A.username FROM earnings E ".
+			"INNER JOIN accounts A ON E.userid = A.id ".
+			"INNER JOIN coins C ON E.coinid = C.id ".
+			"WHERE E.create_time>$since AND E.status < 0"
+		);
+		if (!empty($data)) {
+			echo "user earnings to check:\n";
+			foreach ($data as $row) {
+				echo json_encode($row)."\n";
+			}
+		} else {
+			echo "earnings: all fine\n";
+		}
+	}
 }

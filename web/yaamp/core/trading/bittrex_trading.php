@@ -234,7 +234,7 @@ function doBittrexTrading($quick=false)
 	}
 
 	$withdraw_min = exchange_get($exchange, 'withdraw_min_btc', EXCH_AUTO_WITHDRAW);
-	$withdraw_fee = exchange_get($exchange, 'withdraw_fee_btc', 0.0002);
+	$withdraw_fee = exchange_get($exchange, 'withdraw_fee_btc', 0.001);
 	if($withdraw_min > 0 && $savebalance->balance >= ($withdraw_min + $withdraw_fee))
 	{
 		// $btcaddr = exchange_get($exchange, 'withdraw_btc_address', YAAMP_BTCADDRESS);

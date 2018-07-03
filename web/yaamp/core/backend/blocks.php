@@ -48,6 +48,12 @@ function BackendBlockNew($coin, $db_block)
 		else	// immature
 			$earning->status = 0;
 
+		$ucoin = getdbo('db_coins', $user->coinid);
+		if(!YAAMP_ALLOW_EXCHANGE && $ucoin && $ucoin->algo != $coin->algo) {
+			debuglog($coin->symbol.": invalid earning for {$user->username}, user coin is {$ucoin->symbol}");
+			$earning->status = -1;
+		}
+
 		if (!$earning->save())
 			debuglog(__FUNCTION__.": Unable to insert earning!");
 
@@ -60,11 +66,21 @@ function BackendBlockNew($coin, $db_block)
 	if(!YAAMP_ALLOW_EXCHANGE) // only one coin mined
 		$sqlCond .= " AND coinid = ".intval($coin->id);
 
-	dborun("DELETE FROM shares WHERE algo=:algo AND $sqlCond",
-		array(':algo'=>$coin->algo));
+	try {
+		dborun("DELETE FROM shares WHERE algo=:algo AND $sqlCond", array(':algo'=>$coin->algo));
+
+	} catch (CDbException $e) {
+
+		debuglog("unable to delete shares $sqlCond retrying...");
+		sleep(1);
+		dborun("DELETE FROM shares WHERE algo=:algo AND $sqlCond", array(':algo'=>$coin->algo));
+		// [errorInfo] => array(0 => 'HY000', 1 => 1205, 2 => 'Lock wait timeout exceeded; try restarting transaction')
+		// [*:message] => 'CDbCommand failed to execute the SQL statement: SQLSTATE[HY000]: General error: 1205 Lock wait timeout exceeded; try restarting transaction'
+	}
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
+// Import new blocks (notified by the stratum)
 
 function BackendBlockFind1($coinid = NULL)
 {
@@ -81,6 +97,7 @@ function BackendBlockFind1($coinid = NULL)
 			continue;
 		}
 		if(!$coin->enable) continue;
+		if($coin->rpcencoding == 'DCR' && !$coin->auto_ready) continue;
 
 		$db_block->category = 'orphan';
 		$remote = new WalletRPC($coin);
@@ -144,6 +161,7 @@ function BackendBlockFind1($coinid = NULL)
 }
 
 /////////////////////////////////////////////////////////////////////////////////
+// Refresh immature blocks status (confirmations)
 
 function BackendBlocksUpdate($coinid = NULL)
 {
@@ -152,7 +170,7 @@ function BackendBlocksUpdate($coinid = NULL)
 
 	$sqlFilter = $coinid ? " AND coin_id=".intval($coinid) : '';
 
-	$list = getdbolist('db_blocks', "category IN ('immature','stake') $sqlFilter ORDER BY time");
+	$list = getdbolist('db_blocks', "category IN ('immature','stake','orphan') $sqlFilter ORDER BY time");
 	foreach($list as $block)
 	{
 		$coin = getdbo('db_coins', $block->coin_id);
@@ -180,9 +198,23 @@ function BackendBlocksUpdate($coinid = NULL)
 		}
 
 		$tx = $remote->gettransaction($block->txhash);
-		if(!$tx) {
-			if ($coin->enable)
-				debuglog("{$coin->name} unable to find block {$block->height} tx {$block->txhash}!");
+		if(!$tx && $block->category != 'orphan') {
+			if ($coin->enable) {
+				debuglog("{$coin->name} unable to find {$block->category} block {$block->height} tx {$block->txhash}!");
+				// DCR orphaned confirmations are not(no more) -1!
+				if($coin->rpcencoding == 'DCR' && $block->category == 'immature' && $coin->auto_ready) {
+					$blockext = $remote->getblock($block->blockhash);
+					$conf = arraySafeVal($blockext,'confirmations',-1);
+					if ($conf == -1 || ($conf > 2 && arraySafeVal($blockext,'nextblockhash','') == '')) {
+						debuglog("{$coin->name} orphan block {$block->height} detected! (after $conf confirmations)");
+						$block->confirmations = -1;
+						$block->amount = 0;
+						$block->category = 'orphan';
+						$block->save();
+						continue;
+					}
+				}
+			}
 			else if ((time() - $block->time) > (7 * 24 * 3600)) {
 				debuglog("{$coin->name} outdated immature block {$block->height} detected!");
 				$block->category = 'orphan';
@@ -191,10 +223,24 @@ function BackendBlocksUpdate($coinid = NULL)
 			continue;
 		}
 
+		if ($block->category == 'orphan') {
+			// LUX doing multiple reorg ? Only seen on this wallet
+			if ($coin->enable && (time() - $block->time) < 3600) {
+				$blockext = $remote->getblock($block->blockhash);
+				$conf = arraySafeVal($blockext,'confirmations',-1);
+				if ($conf > 2 && arraySafeVal($blockext,'nextblockhash','') != '') {
+					debuglog("{$coin->name} orphan block {$block->height} is not anymore! ($conf confirmations)");
+					$block->category = 'new'; // will set amount and restore user earnings
+					$block->save();
+				}
+			}
+			continue;
+		}
+
 		$block->confirmations = $tx['confirmations'];
 
 		$category = $block->category;
-		if($block->confirmations == -1) {
+		if($block->confirmations == -1 && $coin->enable && $coin->auto_ready) {
 			$category = 'orphan';
 			$block->amount = 0;
 		}
@@ -220,11 +266,18 @@ function BackendBlocksUpdate($coinid = NULL)
 		$block->category = $category;
 		$block->save();
 
-		if($category == 'generate')
-			dborun("update earnings set status=1, mature_time=UNIX_TIMESTAMP() where blockid=$block->id");
+		if($category == 'generate') {
+			dborun("UPDATE earnings SET status=1, mature_time=UNIX_TIMESTAMP() WHERE blockid=".intval($block->id)." AND status!=-1");
 
+			// auto update mature_blocks
+			if ($block->confirmations > 0 && $block->confirmations < $coin->mature_blocks || empty($coin->mature_blocks)) {
+				debuglog("{$coin->symbol} mature_blocks updated to {$block->confirmations}");
+				$coin->mature_blocks = $block->confirmations;
+				$coin->save();
+			}
+		}
 		else if($category != 'immature')
-			dborun("delete from earnings where blockid=$block->id");
+			dborun("DELETE FROM earnings WHERE blockid=".intval($block->id)." AND status!=-1");
 	}
 
 	$d1 = microtime(true) - $t1;
@@ -232,9 +285,12 @@ function BackendBlocksUpdate($coinid = NULL)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////
+// Search new block transactions
 
 function BackendBlockFind2($coinid = NULL)
 {
+	$t1 = microtime(true);
+
 	$sqlFilter = $coinid ? "id=".intval($coinid) : 'enable=1';
 
 	$coins = getdbolist('db_coins', $sqlFilter);
@@ -318,7 +374,50 @@ function BackendBlockFind2($coinid = NULL)
 
 		$coin->save();
 	}
+
+	$d1 = microtime(true) - $t1;
+	controller()->memcache->add_monitoring_function(__FUNCTION__, $d1);
+	//debuglog(__FUNCTION__." took ".round($d1,3)." sec");
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////
+// Update coin totals from the db blocks/earnings (allow triggers and easier balance sums)
+
+function BackendUpdatePoolBalances($coinid = NULL)
+{
+	$t1 = microtime(true);
+
+	$sqlFilter = 'enable=1';
+
+	if ($coinid) { // used from wallet manual send
+		$sqlFilter = "id=".intval($coinid);
+		// refresh balance field from the wallet info
+		$coin = getdbo('db_coins', $coinid);
+		$remote = new WalletRPC($coin);
+		$info = $remote->getinfo();
+		if(isset($info['balance'])) {
+			$coin->balance = $info['balance'];
+			$coin->save();
+		}
+	}
+
+	$coins = getdbolist('db_coins', $sqlFilter);
+	foreach($coins as $coin)
+	{
+		$coin->immature = (double) dboscalar("SELECT SUM(amount) FROM blocks WHERE category='immature' AND coin_id=".intval($coin->id));
+		$coin->cleared = (double) dboscalar("SELECT SUM(balance) FROM accounts WHERE coinid=".intval($coin->id));
+		$pending = (double) dboscalar("SELECT SUM(amount) FROM earnings WHERE status=1 AND coinid=".intval($coin->id)); // (to be cleared)
+		$coin->available = (double) $coin->balance - $coin->cleared - $pending;
+		//if ($pending) debuglog("{$coin->symbol} immature {$coin->immature}, cleared {$coin->cleared}, pending {$pending}, available {$coin->available}");
+		$coin->save();
+	}
+
+	$d1 = microtime(true) - $t1;
+	controller()->memcache->add_monitoring_function(__FUNCTION__, $d1);
+	//debuglog(__FUNCTION__." took ".round($d1,3)." sec");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////
 
 function MonitorBTC()
 {

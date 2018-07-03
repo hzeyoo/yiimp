@@ -31,8 +31,14 @@ int g_stratum_max_ttf;
 int g_stratum_max_cons = 5000;
 bool g_stratum_reconnect;
 bool g_stratum_renting;
+bool g_stratum_segwit;
 bool g_autoexchange = true;
 
+uint64_t g_max_shares = 0;
+uint64_t g_shares_counter = 0;
+uint64_t g_shares_log = 0;
+
+bool g_allow_rolltime = true;
 time_t g_last_broadcasted = 0;
 YAAMP_DB *g_db = NULL;
 
@@ -100,15 +106,25 @@ YAAMP_ALGO g_algos[] =
 	{"x11evo", x11evo_hash, 1, 0, 0},
 	{"xevan", xevan_hash, 0x100, 0, 0},
 
+	{"timetravel", timetravel_hash, 0x100, 0, 0},
+	{"bitcore", timetravel10_hash, 0x100, 0, 0},
+	{"hsr", hsr_hash, 1, 0, 0},
+	{"hmq1725", hmq17_hash, 0x10000, 0, 0},
+
+	{"jha", jha_hash, 0x10000, 0},
+
 	{"lyra2", lyra2re_hash, 0x80, 0, 0},
 	{"lyra2v2", lyra2v2_hash, 0x100, 0, 0},
+	{"lyra2z", lyra2z_hash, 0x100, 0, 0},
 
+	{"bastion", bastion_hash, 1, 0 },
 	{"blake", blake_hash, 1, 0 },
 	{"blakecoin", blakecoin_hash, 1 /*0x100*/, 0, sha256_hash_hex },
 	{"blake2s", blake2s_hash, 1, 0 },
 	{"vanilla", blakecoin_hash, 1, 0 },
 	{"decred", decred_hash, 1, 0 },
 
+	{"deep", deep_hash, 1, 0, 0},
 	{"fresh", fresh_hash, 0x100, 0, 0},
 	{"quark", quark_hash, 1, 0, 0},
 	{"nist5", nist5_hash, 1, 0, 0},
@@ -117,7 +133,11 @@ YAAMP_ALGO g_algos[] =
 	{"dmd-gr", groestl_hash, 0x100, 0, 0}, /* diamond (double groestl) */
 	{"myr-gr", groestlmyriad_hash, 1, 0, 0}, /* groestl + sha 64 */
 	{"skein", skein_hash, 1, 0, 0},
+	{"tribus", tribus_hash, 1, 0, 0},
 	{"keccak", keccak256_hash, 0x80, 0, sha256_hash_hex },
+	{"phi", phi_hash, 1, 0, 0},
+	{"polytimos", polytimos_hash, 1, 0, 0},
+	{"skunk", skunk_hash, 1, 0, 0},
 
 	{"bmw", bmw_hash, 1, 0, 0},
 	{"lbry", lbry_hash, 0x100, 0, 0},
@@ -132,6 +152,8 @@ YAAMP_ALGO g_algos[] =
 	{"veltor", veltor_hash, 1, 0, 0},
 	{"velvet", velvet_hash, 0x10000, 0, 0},
 	{"argon2", argon2_hash, 0x10000, 0, sha256_hash_hex },
+
+	{"sha256t", sha256t_hash, 1, 0, 0}, // sha256 3x
 
 	{"sib", sib_hash, 1, 0, 0},
 
@@ -200,6 +222,7 @@ int main(int argc, char **argv)
 	g_stratum_max_ttf = iniparser_getint(ini, "STRATUM:max_ttf", 0x70000000);
 	g_stratum_reconnect = iniparser_getint(ini, "STRATUM:reconnect", true);
 	g_stratum_renting = iniparser_getint(ini, "STRATUM:renting", true);
+	g_stratum_segwit = iniparser_getint(ini, "STRATUM:segwit", 0);
 
 	iniparser_freedict(ini);
 
@@ -214,7 +237,15 @@ int main(int argc, char **argv)
 	struct rlimit rlim_threads = {0x8000, 0x8000};
 	setrlimit(RLIMIT_NPROC, &rlim_threads);
 
-	stratumlog("* starting stratumd for %s on %s:%d\n", g_current_algo->name, g_tcp_server, g_tcp_port);
+	stratumlogdate("starting stratum for %s on %s:%d\n",
+		g_current_algo->name, g_tcp_server, g_tcp_port);
+
+	// ntime should not be changed by miners for these algos
+	g_allow_rolltime = strcmp(g_current_algo->name,"x11evo");
+	g_allow_rolltime = g_allow_rolltime && strcmp(g_current_algo->name,"timetravel");
+	g_allow_rolltime = g_allow_rolltime && strcmp(g_current_algo->name,"bitcore");
+	if (!g_allow_rolltime)
+		stratumlog("note: time roll disallowed for %s algo\n", g_current_algo->name);
 
 	g_db = db_connect();
 	if(!g_db) yaamp_error("Cant connect database");
@@ -291,6 +322,8 @@ int main(int argc, char **argv)
 	pthread_join(thread2, NULL);
 	db_close(g_db); // client threads (called by stratum one)
 
+	closelogs();
+
 	return 0;
 }
 
@@ -305,8 +338,22 @@ void *monitor_thread(void *p)
 		if(g_last_broadcasted + YAAMP_MAXJOBDELAY < time(NULL))
 		{
 			g_exiting = true;
-			stratumlog("%s dead lock, exiting...\n", g_current_algo->name);
+			stratumlogdate("%s dead lock, exiting...\n", g_stratum_algo);
 			exit(1);
+		}
+
+		if(g_max_shares && g_shares_counter) {
+
+			if((g_shares_counter - g_shares_log) > 10000) {
+				stratumlogdate("%s %luK shares...\n", g_stratum_algo, (g_shares_counter/1000u));
+				g_shares_log = g_shares_counter;
+			}
+
+			if(g_shares_counter > g_max_shares) {
+				g_exiting = true;
+				stratumlogdate("%s need a restart (%lu shares), exiting...\n", g_stratum_algo, (unsigned long) g_max_shares);
+				exit(1);
+			}
 		}
 	}
 }
@@ -335,22 +382,33 @@ void *stratum_thread(void *p)
 
 	/////////////////////////////////////////////////////////////////////////
 
+	int failcount = 0;
 	while(!g_exiting)
 	{
 		int sock = accept(listen_sock, NULL, NULL);
 		if(sock <= 0)
 		{
-			stratumlog("%s accept error %d %d\n", g_current_algo->name, res, errno);
+			int error = errno;
+			stratumlog("%s socket accept() error %d\n", g_stratum_algo, error);
+			failcount++;
+			usleep(50000);
+			if (error == 24 && failcount > 16) {
+				g_exiting = true;
+				stratumlogdate("%s too much socket failure, exiting...\n", g_stratum_algo);
+				exit(error);
+			}
 			continue;
 		}
 
+		failcount = 0;
 		pthread_t thread;
-
 		int res = pthread_create(&thread, NULL, client_thread, (void *)(long)sock);
 		if(res != 0)
 		{
+			int error = errno;
 			close(sock);
-			stratumlog("%s pthread_create error %d %d\n", g_current_algo->name, res, errno);
+			g_exiting = true;
+			stratumlog("%s pthread_create error %d %d\n", g_stratum_algo, res, error);
 		}
 
 		pthread_detach(thread);

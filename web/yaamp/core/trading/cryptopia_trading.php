@@ -245,7 +245,7 @@ function doCryptopiaTrading($quick=false)
 	}
 
 	$withdraw_min = exchange_get($exchange, 'withdraw_min_btc', EXCH_AUTO_WITHDRAW);
-	$withdraw_fee = exchange_get($exchange, 'withdraw_fee_btc', 0.0002);
+	$withdraw_fee = exchange_get($exchange, 'withdraw_fee_btc', 0.0008);
 
 	// auto withdraw
 	if(is_object($savebalance))

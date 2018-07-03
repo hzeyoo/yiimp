@@ -154,17 +154,32 @@ class ExchangeCommand extends CConsoleCommand
 			}
 			else echo("c-cex btc: ".json_encode($balances['result'][1])."\n");
 		}
+		if (!empty(EXCH_COINMARKETS_USER)) {
+			$balances = coinsmarkets_api_user('gettradinginfo');
+			if (!is_array($balances)) echo "coinsmarkets error ".json_encode($balances)."\n";
+			else echo("coinsmarkets: ".json_encode($balances['return'])."\n");
+		}
 		if (!empty(EXCH_CRYPTOPIA_KEY)) {
 			$balance = cryptopia_api_user('GetBalance',array("Currency"=>"BTC"));
-			echo("cryptopia btc: ".json_encode($balance->Data)."\n");
+			if (!is_object($balance)) echo("cryptopia error ".json_encode($balance)."\n");
+			else echo("cryptopia btc: ".json_encode($balance->Data)."\n");
+		}
+		if (!empty(EXCH_HITBTC_KEY)) {
+			$data = hitbtc_api_user('trading/balance');
+			if (!is_object($data) || !isset($data->balance)) echo("hitbtc error ".json_encode($data)."\n");
+			else foreach ($data->balance as $balance) {
+				if (objSafeVal($balance,'currency_code') == 'BTC')
+					echo("hitbtc btc: ".json_encode($balance)."\n");
+			}
 		}
 		if (!empty(EXCH_KRAKEN_KEY)) {
 			$balance = kraken_api_user('Balance');
 			echo("kraken btc: ".json_encode($balance)."\n");
 		}
 		if (!empty(EXCH_LIVECOIN_KEY)) {
-			$balance = livecoin_api_user('payment/balance', array('currency'=>'BTC'));
-			if (!is_object($balance)) echo("livecoin error\n");
+			$livecoin = new LiveCoinApi;
+			$balance = $livecoin->getBalances('BTC');
+			if (!$balance) echo("livecoin error\n");
 			else echo("livecoin btc: ".json_encode($balance)."\n");
 			// {"type":"available","currency":"BTC","value":0}
 		}

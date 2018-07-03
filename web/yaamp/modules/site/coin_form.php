@@ -86,7 +86,25 @@ echo CUFHtml::closeCtrlHolder();
 echo CUFHtml::openActiveCtrlHolder($coin, 'target_height');
 echo CUFHtml::activeLabelEx($coin, 'target_height');
 echo CUFHtml::activeTextField($coin, 'target_height', array('maxlength'=>32,'style'=>'width: 120px;'));
-echo '<p class="formHint2"></p>';
+echo '<p class="formHint2">Known height of the network</p>';
+echo CUFHtml::closeCtrlHolder();
+
+echo CUFHtml::openActiveCtrlHolder($coin, 'powend_height');
+echo CUFHtml::activeLabelEx($coin, 'powend_height');
+echo CUFHtml::activeTextField($coin, 'powend_height', array('maxlength'=>32,'style'=>'width: 120px;'));
+echo '<p class="formHint2">Height of the end of PoW mining</p>';
+echo CUFHtml::closeCtrlHolder();
+
+echo CUFHtml::openActiveCtrlHolder($coin, 'mature_blocks');
+echo CUFHtml::activeLabelEx($coin, 'mature_blocks');
+echo CUFHtml::activeTextField($coin, 'mature_blocks', array('maxlength'=>32,'style'=>'width: 120px;'));
+echo '<p class="formHint2">Required block count to mature</p>';
+echo CUFHtml::closeCtrlHolder();
+
+echo CUFHtml::openActiveCtrlHolder($coin, 'block_time');
+echo CUFHtml::activeLabelEx($coin, 'block_time');
+echo CUFHtml::activeTextField($coin, 'block_time', array('maxlength'=>32,'style'=>'width: 120px;'));
+echo '<p class="formHint2">Average block time (sec)</p>';
 echo CUFHtml::closeCtrlHolder();
 
 echo CUFHtml::openActiveCtrlHolder($coin, 'errors');
@@ -141,6 +159,18 @@ echo CUFHtml::activeCheckBox($coin, 'auxpow');
 echo '<p class="formHint2">Merged mining</p>';
 echo CUFHtml::closeCtrlHolder();
 
+echo CUFHtml::openActiveCtrlHolder($coin, 'max_miners');
+echo CUFHtml::activeLabelEx($coin, 'max_miners');
+echo CUFHtml::activeTextField($coin, 'max_miners', array('maxlength'=>32,'style'=>'width: 120px;'));
+echo '<p class="formHint2">Miners allowed by the stratum</p>';
+echo CUFHtml::closeCtrlHolder();
+
+echo CUFHtml::openActiveCtrlHolder($coin, 'max_shares');
+echo CUFHtml::activeLabelEx($coin, 'max_shares');
+echo CUFHtml::activeTextField($coin, 'max_shares', array('maxlength'=>32,'style'=>'width: 120px;'));
+echo '<p class="formHint2">Auto restart stratum after this amount of shares</p>';
+echo CUFHtml::closeCtrlHolder();
+
 echo CUFHtml::openActiveCtrlHolder($coin, 'master_wallet');
 echo CUFHtml::activeLabelEx($coin, 'master_wallet');
 echo CUFHtml::activeTextField($coin, 'master_wallet', array('maxlength'=>200));
@@ -189,6 +219,12 @@ echo CUFHtml::activeCheckBox($coin, 'hasmasternodes');
 echo '<p class="formHint2">Require "payee" and "payee_amount" fields in getblocktemplate (DASH)</p>';
 echo CUFHtml::closeCtrlHolder();
 
+echo CUFHtml::openActiveCtrlHolder($coin, 'usesegwit');
+echo CUFHtml::activeLabelEx($coin, 'usesegwit');
+echo CUFHtml::activeCheckBox($coin, 'usesegwit');
+echo '<p class="formHint2"></p>';
+echo CUFHtml::closeCtrlHolder();
+
 echo "</div>";
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -212,6 +248,16 @@ echo CUFHtml::activeLabelEx($coin, 'market');
 echo CUFHtml::activeTextField($coin, 'market', array('maxlength'=>128,'style'=>'width: 180px;'));
 echo '<p class="formHint2">Selected exchange</p>';
 echo CUFHtml::closeCtrlHolder();
+
+if (empty($coin->price) || empty($coin->market) || $coin->market == 'unknown') {
+
+	echo CUFHtml::openActiveCtrlHolder($coin, 'price');
+	echo CUFHtml::activeLabelEx($coin, 'price');
+	echo CUFHtml::activeTextField($coin, 'price', array('maxlength'=>16,'style'=>'width: 180px;'));
+	echo '<p class="formHint2">Manually set the BTC price if missing</p>';
+	echo CUFHtml::closeCtrlHolder();
+
+}
 
 //echo CUFHtml::openActiveCtrlHolder($coin, 'marketid');
 //echo CUFHtml::activeLabelEx($coin, 'marketid');

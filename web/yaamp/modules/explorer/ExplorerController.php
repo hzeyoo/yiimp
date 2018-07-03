@@ -57,7 +57,6 @@ class ExplorerController extends CommonController
 
 		$id = getiparam('id');
 		$coin = getdbo('db_coins', $id);
-
 		$height = getiparam('height');
 		if($coin && intval($height)>0)
 		{

@@ -158,7 +158,7 @@ void db_update_coinds(YAAMP_DB *db)
 	db_query(db, "SELECT id, name, rpchost, rpcport, rpcuser, rpcpasswd, rpcencoding, master_wallet, reward, price, "
 		"hassubmitblock, txmessage, enable, auto_ready, algo, pool_ttf, charity_address, charity_amount, charity_percent, "
 		"reward_mul, symbol, auxpow, actual_ttf, network_ttf, usememorypool, hasmasternodes, algo, symbol2, "
-		"rpccurl, rpcssl, rpccert, account, multialgos "
+		"rpccurl, rpcssl, rpccert, account, multialgos, max_miners, max_shares, usesegwit "
 		"FROM coins WHERE enable AND auto_ready AND algo='%s' ORDER BY index_avg", g_stratum_algo);
 
 	MYSQL_RES *result = mysql_store_result(&db->mysql);
@@ -256,6 +256,11 @@ void db_update_coinds(YAAMP_DB *db)
 
 		if(row[31]) strcpy(coind->account, row[31]);
 		if(row[32]) coind->multialgos = atoi(row[32]);
+		if(row[33] && atoi(row[33]) > 0) g_stratum_max_cons = atoi(row[33]);
+		if(row[34] && atol(row[34]) > 0) g_max_shares = atol(row[34]);
+		if(row[35]) coind->usesegwit = atoi(row[35]) > 0;
+
+		if(coind->usesegwit) g_stratum_segwit = true;
 
 		// force the right rpcencoding for DCR
 		if(!strcmp(coind->symbol, "DCR") && strcmp(coind->rpcencoding, "DCR"))
@@ -503,7 +508,7 @@ void db_store_stats(YAAMP_DB *db, YAAMP_CLIENT *client, json_value *stats)
 	char sdev[80], stype[8], svid[12], sarch[8];
 	char salgo[32], sclient[48], sdriver[32], sos[8];
 	double khashes, intensity, throughput;
-	int power, mem, freq, memf;
+	int power, freq, memf, realfreq, realmemf, plimit;
 
 	if (!db) return;
 
@@ -522,17 +527,24 @@ void db_store_stats(YAAMP_DB *db, YAAMP_CLIENT *client, json_value *stats)
 	json_str_safe(stats, "driver", sdriver); // or cpu compiler
 
 	power = json_int_safe(stats, "power");
-	mem   = json_int_safe(stats, "mem");
 	freq  = json_int_safe(stats, "freq");
 	memf  = json_int_safe(stats, "memf");
+	realfreq = json_int_safe(stats, "curr_freq");
+	realmemf = json_int_safe(stats, "curr_memf");
+	plimit = json_int_safe(stats, "plimit");
 	intensity  = json_double_safe(stats, "intensity");
-	throughput = json_double_safe(stats, "throughput");
 	khashes    = json_double_safe(stats, "khashes");
+	throughput = json_double_safe(stats, "throughput");
+	if (throughput < 0.) throughput = 0.;
+	if (khashes < 0. || intensity < 0.) return;
 
 	db_query(db, "INSERT INTO benchmarks("
 		"time, algo, type, device, arch, vendorid, os, driver,"
-		"client, khps, freq, memf, power, mem, intensity, throughput, userid"
-		") VALUES (%d,'%s','%s','%s','%s','%s','%s','%s', '%s',%f,%d,%d,%d,%d,%.2f,%.0f,%d)",
+		"client, khps, freq, memf, realfreq, realmemf, power, plimit, "
+		"intensity, throughput, userid )"
+		"VALUES (%d,'%s','%s','%s','%s','%s','%s','%s',"
+		"'%s',%f,%d,%d,%d,%d,%d,%d, %.2f,%.0f,%d)",
 		t, g_current_algo->name, stype, sdev, sarch, svid, sos, sdriver,
-		sclient, khashes, freq, memf, power, mem, intensity, throughput, client->userid);
+		sclient, khashes, freq, memf, realfreq, realmemf, power, plimit,
+		intensity, throughput, client->userid);
 }

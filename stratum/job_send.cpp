@@ -87,8 +87,8 @@ void job_broadcast(YAAMP_JOB *job)
 	int s1 = current_timestamp_dms();
 	int count = 0;
 	struct timeval timeout;
-	timeout.tv_sec = 5;
-	timeout.tv_usec = 0;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 100000; // max time to push to a socket (very fast)
 
 	YAAMP_JOB_TEMPLATE *templ = job->templ;
 
@@ -115,10 +115,10 @@ void job_broadcast(YAAMP_JOB *job)
 		if (socket_send_raw(client->sock, buffer, strlen(buffer)) == -1) {
 			int err = errno;
 			client->broadcast_timeouts++;
-			clientlog(client, "unable to send job, sock err %d (%d times)", err, client->broadcast_timeouts);
 			// too much timeouts, disconnect him
 			if (client->broadcast_timeouts >= 3) {
 				shutdown(client->sock->sock, SHUT_RDWR);
+				clientlog(client, "unable to send job, sock err %d (%d times)", err, client->broadcast_timeouts);
 				if(client->workerid && !client->reconnecting) {
 				//	CommonLock(&g_db_mutex);
 					db_clear_worker(g_db, client);

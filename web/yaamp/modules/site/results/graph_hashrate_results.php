@@ -1,7 +1,10 @@
 <?php
 
+/* Graph shown in Pool Tab, Last 24 Hours algo hashrate */
+
 $percent = 16;
 $algo = user()->getState('yaamp-algo');
+$factor = yaamp_algo_mBTC_factor($algo); // 1000 sha (GH/s), 1 for normal MH/s
 
 $step = 15*60;
 $t = time() - 24*60*60;
@@ -22,7 +25,8 @@ for($i = 0; $i < 95-count($stats); $i++)
 
 foreach($stats as $n)
 {
-	$m = round($n->hashrate/1000000, 3);
+	$r = $n->hashrate/1000000;
+	$m = round($r / $factor, 3);
 
 	$d = date('Y-m-d H:i:s', $n->time);
 	$json .= "[\"$d\",$m],";

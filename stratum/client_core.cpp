@@ -24,6 +24,9 @@ void get_random_key(char *key)
 
 YAAMP_CLIENT *client_find_notify_id(const char *notify_id, bool reconnecting)
 {
+	if (!notify_id || !strlen(notify_id))
+		return NULL;
+
 	g_list_client.Enter();
 	for(CLI li = g_list_client.first; li; li = li->next)
 	{
@@ -166,11 +169,11 @@ bool client_reset_multialgo(YAAMP_CLIENT *client, bool first)
 		int e = time(NULL) - client->last_best;
 		double d = best->algo->profit*best->factor - current->algo->profit*current->factor;
 		double p = d/best->algo->profit/best->factor;
-
-//		debuglog("current %s %f\n", current->algo->name, current->algo->profit*current->factor);
-//		debuglog("best    %s %f\n", best->algo->name, best->algo->profit*best->factor);
-//		debuglog(" %d * %f = %f --- percent %f %f\n", e, d, e*d, p, e*p);
-
+#ifdef DEBUG_BEST_MULTI
+		debuglog("current %s %f\n", current->algo->name, current->algo->profit*current->factor);
+		debuglog("best    %s %f\n", best->algo->name, best->algo->profit*best->factor);
+		debuglog(" %d * %f = %f --- percent %f %f\n", e, d, e*d, p, e*p);
+#endif
 		if(p < 0.02) return false;
 		if(e*p < 100) return false;
 	}

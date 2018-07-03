@@ -62,6 +62,11 @@ class WalletRPC {
 				// if wallet is stopped
 				return false;
 			}
+			if (stripos($method, "key") !== false) {
+				$this->error = "$method not authorized!";
+				debuglog("$method not authorized (key)!");
+				return false;
+			}
 			// convert common methods used by yiimp
 			switch ($method) {
 			case 'getaccountaddress':
@@ -218,8 +223,59 @@ class WalletRPC {
 				$this->error = $this->rpc_wallet->error;
 				break;
 			case 'listtransactions':
-				$res = $this->rpc_wallet->get_bulk_payments();
+				// make it as close as possible as bitcoin rpc... sigh (todo: xmr-rpc function)
+				$txs = array();
+				$named_params = array('transfer_type' => 'all');
+				$res = $this->rpc_wallet->incoming_transfers($named_params);
+				$res = isset($res['transfers']) ? $res['transfers'] : array();
 				$this->error = $this->rpc_wallet->error;
+				foreach ($res as $k=>$tx) {
+					$tx['category'] = 'receive';
+					$tx['txid'] = $tx['tx_hash'];
+					$tx['amount'] = $tx['amount'] / 1e12;
+					$raw = $this->rpc->gettransactions(array(
+						'txs_hashes' => array($tx['tx_hash']),
+						'decode_as_json' => true
+					));
+					$raw = reset(arraySafeVal($raw,'txs',array()));
+					if (!empty($raw)) {
+						$k = (double) $raw['block_height'] + ($k/1000.0);
+						unset($raw['as_hex']);
+						unset($raw['tx_hash']);
+						//$raw['json'] = json_decode($raw['as_json']);
+						unset($raw['as_json']);
+					}
+					$tx = array_merge($tx, $raw);
+					unset($tx['tx_hash']);
+					$k = sprintf("%015.4F", $k); // sort key
+					$txs[$k] = $tx;
+				}
+				$named_params = array('min_block_height' => 1);
+				$res = $this->rpc_wallet->get_bulk_payments($named_params);
+				$res = isset($res['payments']) ? $res['payments'] : array();
+				foreach ($res as $k=>$tx) {
+					$tx['category'] = 'send';
+					$k = (double) $raw['block_height'] + 0.5 + ($k/1000.0); // sort key
+					$tx['txid'] = $tx['tx_hash'];
+					$tx['amount'] = $tx['amount'] / 1e12;
+					$raw = $this->rpc->gettransactions(array(
+						'txs_hashes' => array($tx['tx_hash']),
+						'decode_as_json' => true
+					));
+					$raw = reset(arraySafeVal($raw,'txs',array()));
+					if (!empty($raw)) {
+						unset($raw['as_hex']);
+						unset($raw['tx_hash']);
+						//$raw['json'] = json_decode($raw['as_json']);
+						unset($raw['as_json']);
+					}
+					$tx = array_merge($tx, $raw);
+					unset($tx['tx_hash']);
+					$k = sprintf("%015.4F", $k);
+					$txs[$k] = $tx;
+				}
+				krsort($txs);
+				$res = array_values($txs);
 				break;
 			case 'getaddress':
 				$res = $this->rpc_wallet->getaddress();
@@ -241,7 +297,10 @@ class WalletRPC {
 				$this->error = $this->rpc_wallet->error;
 				break;
 			case 'incoming_transfers': // deprecated ?
-				$res = $this->rpc_wallet->incoming_transfers();
+				$named_params = array(
+					"transfer_type"=>arraySafeVal($params, 0)
+				);
+				$res = $this->rpc_wallet->incoming_transfers($named_params);
 				$this->error = $this->rpc_wallet->error;
 				break;
 			case 'sendtoaddress':
@@ -298,6 +357,16 @@ class WalletRPC {
 				$res = $this->rpc_wallet->store();
 				$this->error = $this->rpc_wallet->error;
 				break;
+			case 'gettransactions':
+				$named_params = array(
+					"txs_hashes" => array(arraySafeVal($params, 0, array())),
+					'decode_as_json' => true
+				);
+				$res = $this->rpc->gettransactions($named_params);
+				unset($res['txs_as_hex']); // dup
+				unset($res['txs_as_json']); // dup
+				$this->error = $this->rpc->error;
+				return $res;
 			default:
 				// default to daemon
 				$res = $this->rpc->__call($method,$params);
@@ -322,6 +391,77 @@ class WalletRPC {
 	{
 		//debuglog("wallet set $prop ".json_encode($value));
 		$this->rpc->$prop = $value;
+	}
+
+	function execute($query)
+	{
+		$result = '';
+
+		if (!empty($query)) try {
+
+			// if its a raw json query...
+			if (strpos($query,"{") !== false && json_decode($query)) {
+				try {
+					debuglog($query);
+					$result = $this->rpc->request_json($query);
+				} catch (Exception $e) {
+					$result = false;
+				}
+				return $result;
+			}
+
+			$params = explode(' ', trim($query));
+			$command = array_shift($params);
+
+			$p = array();
+			foreach ($params as $param) {
+				if ($param === 'true' || $param === 'false') {
+					$param = $param === 'true' ? true : false;
+				}
+				else if (strpos($param, '0x') === 0)
+					$param = "$param"; // eth hex crap
+				else
+					$param = (is_numeric($param)) ? 0 + $param : trim($param,'"');
+				$p[] = $param;
+			}
+
+			switch (count($params)) {
+			case 0:
+				$result = $this->$command();
+				break;
+			case 1:
+				$result = $this->$command($p[0]);
+				break;
+			case 2:
+				$result = $this->$command($p[0], $p[1]);
+				break;
+			case 3:
+				$result = $this->$command($p[0], $p[1], $p[2]);
+				break;
+			case 4:
+				$result = $this->$command($p[0], $p[1], $p[2], $p[3]);
+				break;
+			case 5:
+				$result = $this->$command($p[0], $p[1], $p[2], $p[3], $p[4]);
+				break;
+			case 6:
+				$result = $this->$command($p[0], $p[1], $p[2], $p[3], $p[4], $p[5]);
+				break;
+			case 7:
+				$result = $this->$command($p[0], $p[1], $p[2], $p[3], $p[4], $p[5], $p[6]);
+				break;
+			case 8:
+				$result = $this->$command($p[0], $p[1], $p[2], $p[3], $p[4], $p[5], $p[6], $p[7]);
+				break;
+			default:
+				$result = 'error: too much parameters';
+			}
+
+		} catch (Exception $e) {
+			$result = false;
+		}
+
+		return $result;
 	}
 
 }
