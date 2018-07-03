@@ -20,7 +20,10 @@ echo CHtml::cssFile('/yaamp/ui/css/main.css');
 echo CHtml::cssFile('/yaamp/ui/css/table.css');
 //echo CHtml::scriptFile('/yaamp/ui/js/jquery.tablesorter.js');
 
-echo CHtml::scriptFile('/extensions/jquery/js/jquery-1.8.3-dev.js');
-echo CHtml::scriptFile('/extensions/jquery/js/jquery-ui-1.9.1.custom.min.js');
+//echo CHtml::scriptFile('/extensions/jquery/js/jquery-1.8.3-dev.js');
+//echo CHtml::scriptFile('/extensions/jquery/js/jquery-ui-1.9.1.custom.min.js');
+
+$cs = app()->getClientScript();
+$cs->registerCoreScript('jquery.ui');
 
 echo "</head>";

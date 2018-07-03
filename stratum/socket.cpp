@@ -63,19 +63,35 @@ json_value *socket_nextjson(YAAMP_SOCKET *s, YAAMP_CLIENT *client)
 		s->buflen += len;
 		s->buffer[s->buflen] = 0;
 
-//		if(client && client->logtraffic)
-//			stratumlog("recv: %s\n", s->buffer);
+		if(client && client->logtraffic)
+			stratumlog("recv: %d\n", s->buflen);
 
 	//	pthread_mutex_lock(&s->mutex);
 	}
 
-	char *p = strchr(s->buffer, '}');
-	if(!p)
+	char *b = strchr(s->buffer, '{');
+	if(!b)
 	{
 		if(client)
 			clientlog(client, "bad json");
 
 		debuglog("%s\n", s->buffer);
+		return NULL;
+	}
+
+	char *p = strchr(b, '}');
+	if (p) {
+		// buffer can contain multiple queries
+		if(!strchr(p, '{')) p = strrchr(b, '}');
+		else { p = strchr(p, '{'); p--; };
+	}
+
+	if(!p)
+	{
+		if(client)
+			clientlog(client, "bad json end");
+
+		debuglog("%s\n", b);
 		return NULL;
 	}
 
@@ -87,15 +103,15 @@ json_value *socket_nextjson(YAAMP_SOCKET *s, YAAMP_CLIENT *client)
 	if(client && client->logtraffic)
 		stratumlog("%s, %s, %s, %s, recv: %s\n", client->sock->ip, client->username, client->password, g_current_algo->name, s->buffer);
 
-	int bytes = strlen(s->buffer);
+	int bytes = strlen(b);
 
-	json_value *json = json_parse(s->buffer, bytes);
+	json_value *json = json_parse(b, bytes);
 	if(!json)
 	{
 		if(client)
 			clientlog(client, "bad json parse");
 
-		debuglog("%s\n", s->buffer);
+		debuglog("%s\n", b);
 		return NULL;
 	}
 
@@ -140,6 +156,11 @@ int socket_send(YAAMP_SOCKET *s, const char *format, ...)
 	va_start(args, format);
 	vsprintf(buffer, format, args);
 	va_end(args);
+
+	if(!s) {
+		errno = EINVAL;
+		return -1;
+	}
 
 //	json_value *json = json_parse(buffer, strlen(buffer));
 //	if(!json)

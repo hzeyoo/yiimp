@@ -29,11 +29,16 @@ function yobit_api_query($method)
 
 function yobit_api_query2($method, $req = array())
 {
-	$api_key    = '';
-	$api_secret = '';
+	require_once('/etc/yiimp/keys.php');
+	if (!defined('EXCH_YOBIT_SECRET')) define('EXCH_YOBIT_SECRET', '');
+
+	if (empty(EXCH_YOBIT_SECRET)) return FALSE;
+
+	$api_key    = EXCH_YOBIT_KEY;
+	$api_secret = EXCH_YOBIT_SECRET;
 
 	$req['method'] = $method;
-	$req['nonce'] = time();
+	$req['nonce'] = time(); //sleep(1);
 
 	$post_data = http_build_query($req, '', '&');
 	$sign = hash_hmac("sha512", $post_data, $api_secret);
@@ -43,10 +48,10 @@ function yobit_api_query2($method, $req = array())
 		'Key: '.$api_key,
 	);
 
-	$ch = null;
 	$ch = curl_init();
 
 	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+	curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 	curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/4.0 (compatible; SMART_API PHP client; '.php_uname('s').'; PHP/'.phpversion().')');
 	curl_setopt($ch, CURLOPT_URL, 'https://yobit.net/tapi/');
 	curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
@@ -63,15 +68,13 @@ function yobit_api_query2($method, $req = array())
 		return null;
 	}
 
-	curl_close($ch);
-
 	$result = json_decode($res, true);
-	if(!$result) debuglog($res);
+	if(!$result) {
+		$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		debuglog("yobit: $method failed ($status) ".strip_data($res));
+	}
+
+	curl_close($ch);
 
 	return $result;
 }
-
-
-
-
-

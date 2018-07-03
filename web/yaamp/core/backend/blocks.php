@@ -4,11 +4,19 @@ function BackendBlockNew($coin, $db_block)
 {
 //	debuglog("NEW BLOCK $coin->name $db_block->height");
 	$reward = $db_block->amount;
+	if(!$reward || $db_block->algo == 'PoS' || $db_block->algo == 'MN') return;
+	if($db_block->category == 'stake' || $db_block->category == 'generated') return;
 
-	$total_hash_power = dboscalar("select sum(difficulty) from shares where valid and algo='$coin->algo'");
+	$sqlCond = "valid = 1";
+	if(!YAAMP_ALLOW_EXCHANGE) // only one coin mined
+		$sqlCond .= " AND coinid = ".intval($coin->id);
+
+	$total_hash_power = dboscalar("SELECT SUM(difficulty) FROM shares WHERE $sqlCond AND algo=:algo", array(':algo'=>$coin->algo));
 	if(!$total_hash_power) return;
 
-	$list = dbolist("SELECT userid, sum(difficulty) as total from shares where valid and algo='$coin->algo' group by userid");
+	$list = dbolist("SELECT userid, SUM(difficulty) AS total FROM shares WHERE $sqlCond AND algo=:algo GROUP BY userid",
+			array(':algo'=>$coin->algo));
+
 	foreach($list as $item)
 	{
 		$hash_power = $item['total'];
@@ -19,6 +27,10 @@ function BackendBlockNew($coin, $db_block)
 
 		$amount = $reward * $hash_power / $total_hash_power;
 		if(!$user->no_fees) $amount = take_yaamp_fee($amount, $coin->algo);
+		if(!empty($user->donation)) {
+			$amount = take_yaamp_fee($amount, $coin->algo, $user->donation);
+			if ($amount <= 0) continue;
+		}
 
 		$earning = new db_earnings;
 		$earning->userid = $user->id;
@@ -36,33 +48,62 @@ function BackendBlockNew($coin, $db_block)
 		else	// immature
 			$earning->status = 0;
 
-		$earning->save();
+		if (!$earning->save())
+			debuglog(__FUNCTION__.": Unable to insert earning!");
 
-		$user->last_login = time();
+		$user->last_earning = time();
 		$user->save();
 	}
 
 	$delay = time() - 5*60;
-	dborun("delete from shares where algo='$coin->algo' and time<$delay");
+	$sqlCond = "time < $delay";
+	if(!YAAMP_ALLOW_EXCHANGE) // only one coin mined
+		$sqlCond .= " AND coinid = ".intval($coin->id);
+
+	dborun("DELETE FROM shares WHERE algo=:algo AND $sqlCond",
+		array(':algo'=>$coin->algo));
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-function BackendBlockFind1()
+function BackendBlockFind1($coinid = NULL)
 {
+	$sqlFilter = $coinid ? " AND coin_id=".intval($coinid) : '';
+
 //	debuglog(__METHOD__);
-	$list = getdbolist('db_blocks', "category='new' order by time");
+	$list = getdbolist('db_blocks', "category='new' $sqlFilter ORDER BY time");
 	foreach($list as $db_block)
 	{
 		$coin = getdbo('db_coins', $db_block->coin_id);
+		if(!$coin || !$db_block->coin_id) {
+			debuglog("warning: bad coin id {$db_block->coin_id} for block id {$db_block->id}!");
+			$db_block->delete();
+			continue;
+		}
 		if(!$coin->enable) continue;
 
 		$db_block->category = 'orphan';
-		$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+		$remote = new WalletRPC($coin);
 
 		$block = $remote->getblock($db_block->blockhash);
-		if(!$block || !isset($block['tx']) || !isset($block['tx'][0]))
+		$block_age = time() - $db_block->time;
+		if($coin->rpcencoding == 'DCR' && $block_age < 2000) {
+			// DCR generated blocks need some time to be accepted by the network (gettransaction)
+			if (!$block) continue;
+			$txid = $block['tx'][0];
+			$tx = $remote->gettransaction($txid);
+			if (!$tx || !isset($tx['details'])) continue;
+			debuglog("{$coin->symbol} {$db_block->height} confirmed after ".$block_age." seconds");
+		}
+		else if(!$block || !isset($block['tx']) || !isset($block['tx'][0]))
 		{
+			$db_block->amount = 0;
+			$db_block->save();
+			debuglog("{$coin->symbol} orphan {$db_block->height} after ".(time() - $db_block->time)." seconds");
+			continue;
+		}
+		else if ($coin->rpcencoding == 'POS' && arraySafeVal($block,'nonce') == 0) {
+			$db_block->category = 'stake';
 			$db_block->save();
 			continue;
 		}
@@ -70,6 +111,7 @@ function BackendBlockFind1()
 		$tx = $remote->gettransaction($block['tx'][0]);
 		if(!$tx || !isset($tx['details']) || !isset($tx['details'][0]))
 		{
+			$db_block->amount = 0;
 			$db_block->save();
 			continue;
 		}
@@ -79,59 +121,109 @@ function BackendBlockFind1()
 		$db_block->amount = $tx['details'][0]['amount'];
 		$db_block->confirmations = $tx['confirmations'];
 		$db_block->price = $coin->price;
-		$db_block->save();
+
+		// save worker to compute blocs found per worker (current workers stats)
+		// now made directly in stratum - require DB update 2015-09-20
+		if (empty($db_block->workerid) && $db_block->userid > 0) {
+			$db_block->workerid = (int) dboscalar(
+				"SELECT workerid FROM shares WHERE userid=:user AND coinid=:coin AND valid=1 AND time <= :time ".
+				"ORDER BY difficulty DESC LIMIT 1", array(
+				':user' => $db_block->userid,
+				':coin' => $db_block->coin_id,
+				':time' => $db_block->time
+			));
+			if (!$db_block->workerid) $db_block->workerid = NULL;
+		}
+
+		if (!$db_block->save())
+			debuglog(__FUNCTION__.": unable to insert block!");
 
 		if($db_block->category != 'orphan')
-			BackendBlockNew($coin, $db_block);
+			BackendBlockNew($coin, $db_block); // will drop shares
 	}
 }
 
 /////////////////////////////////////////////////////////////////////////////////
 
-function BackendBlocksUpdate()
+function BackendBlocksUpdate($coinid = NULL)
 {
 //	debuglog(__METHOD__);
 	$t1 = microtime(true);
 
-	$list = getdbolist('db_blocks', "category='immature' order by time");
+	$sqlFilter = $coinid ? " AND coin_id=".intval($coinid) : '';
+
+	$list = getdbolist('db_blocks', "category IN ('immature','stake') $sqlFilter ORDER BY time");
 	foreach($list as $block)
 	{
 		$coin = getdbo('db_coins', $block->coin_id);
-		if(!$coin || !$coin->enable)
-		{
+		if(!$block->coin_id || !$coin) {
+			debuglog("warning: bad coin id {$block->coin_id} for block id {$block->id}!");
 			$block->delete();
 			continue;
 		}
 
-		$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+		$remote = new WalletRPC($coin);
 		if(empty($block->txhash))
 		{
 			$blockext = $remote->getblock($block->blockhash);
+
+			if ($coin->rpcencoding == 'POS' && arraySafeVal($blockext,'nonce') == 0) {
+				$block->category = 'stake';
+				$block->save();
+			}
+
 			if(!$blockext || !isset($blockext['tx'][0])) continue;
 
 			$block->txhash = $blockext['tx'][0];
+
+			if(empty($block->txhash)) continue;
 		}
 
 		$tx = $remote->gettransaction($block->txhash);
-		if(!$tx) continue;
+		if(!$tx) {
+			if ($coin->enable)
+				debuglog("{$coin->name} unable to find block {$block->height} tx {$block->txhash}!");
+			else if ((time() - $block->time) > (7 * 24 * 3600)) {
+				debuglog("{$coin->name} outdated immature block {$block->height} detected!");
+				$block->category = 'orphan';
+			}
+			$block->save();
+			continue;
+		}
 
 		$block->confirmations = $tx['confirmations'];
 
-		if($block->confirmations == -1)
-			$block->category = 'orphan';
+		$category = $block->category;
+		if($block->confirmations == -1) {
+			$category = 'orphan';
+			$block->amount = 0;
+		}
 
 		else if(isset($tx['details']) && isset($tx['details'][0]))
-			$block->category = $tx['details'][0]['category'];
+			$category = $tx['details'][0]['category'];
 
 		else if(isset($tx['category']))
-			$block->category = $tx['category'];
+			$category = $tx['category'];
 
+		// PoS blocks
+		if ($block->category == 'stake') {
+			if ($category == 'generate') {
+				$block->category = 'generated';
+			} else if ($category == 'orphan') {
+				$block->category = 'orphan';
+			}
+			$block->save();
+			continue;
+		}
+
+		// PoW blocks
+		$block->category = $category;
 		$block->save();
 
-		if($block->category == 'generate')
+		if($category == 'generate')
 			dborun("update earnings set status=1, mature_time=UNIX_TIMESTAMP() where blockid=$block->id");
 
-		else if($block->category != 'immature')
+		else if($category != 'immature')
 			dborun("delete from earnings where blockid=$block->id");
 	}
 
@@ -141,24 +233,26 @@ function BackendBlocksUpdate()
 
 ////////////////////////////////////////////////////////////////////////////////////////////
 
-function BackendBlockFind2()
+function BackendBlockFind2($coinid = NULL)
 {
-	$coins = getdbolist('db_coins', "enable");
+	$sqlFilter = $coinid ? "id=".intval($coinid) : 'enable=1';
+
+	$coins = getdbolist('db_coins', $sqlFilter);
 	foreach($coins as $coin)
 	{
 		if($coin->symbol == 'BTC') continue;
-		$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+		$remote = new WalletRPC($coin);
 
 		$mostrecent = 0;
-		if($coin->lastblock == null) $coin->lastblock = '';
+		if(empty($coin->lastblock)) $coin->lastblock = '';
 		$list = $remote->listsinceblock($coin->lastblock);
 		if(!$list) continue;
 
 //		debuglog("find2 $coin->symbol");
 		foreach($list['transactions'] as $transaction)
 		{
-			if($transaction['time'] > time() - 5*60) continue;
 			if(!isset($transaction['blockhash'])) continue;
+			if($transaction['time'] > time() - 5*60) continue;
 
 			if($transaction['time'] > $mostrecent)
 			{
@@ -170,11 +264,15 @@ function BackendBlockFind2()
 			if($transaction['category'] != 'generate' && $transaction['category'] != 'immature') continue;
 
 			$blockext = $remote->getblock($transaction['blockhash']);
+			if(!$blockext) continue;
 
-			$db_block = getdbosql('db_blocks', "blockhash='{$transaction['blockhash']}' or height={$blockext['height']}");
+			$db_block = getdbosql('db_blocks', "coin_id=:id AND (blockhash=:hash OR height=:height)",
+				array(':id'=>$coin->id, ':hash'=>$transaction['blockhash'], ':height'=>$blockext['height'])
+			);
 			if($db_block) continue;
 
-//			debuglog("adding lost block $coin->name {$blockext['height']}");
+			if ($coin->rpcencoding == 'DCR')
+				debuglog("{$coin->name} generated block {$blockext['height']} detected!");
 
 			$db_block = new db_blocks;
 			$db_block->blockhash = $transaction['blockhash'];
@@ -182,12 +280,38 @@ function BackendBlockFind2()
 			$db_block->category = 'immature';			//$transaction['category'];
 			$db_block->time = $transaction['time'];
 			$db_block->amount = $transaction['amount'];
+			$db_block->algo = $coin->algo;
+
+			if (arraySafeVal($blockext,'nonce',0) != 0) {
+				$db_block->difficulty_user = hash_to_difficulty($coin, $transaction['blockhash']);
+			} else if ($coin->rpcencoding == 'POS') {
+				$db_block->category = 'stake';
+			}
+
+			// masternode earnings...
+			if (empty($db_block->userid) && $transaction['amount'] == 0 && $transaction['generated']) {
+				$db_block->algo = 'MN';
+				$tx = $remote->getrawtransaction($transaction['txid'], 1);
+
+				// assume the MN amount is in the last vout record (should check "addresses")
+				if (isset($tx['vout']) && !empty($tx['vout'])) {
+					$vout = end($tx['vout']);
+					$db_block->amount = $vout['value'];
+					debuglog("MN ".bitcoinvaluetoa($db_block->amount).' '.$coin->symbol.' ('.$blockext['height'].')');
+				}
+
+				if (!$coin->hasmasternodes) {
+					$coin->hasmasternodes = true;
+					$coin->save();
+				}
+			}
+
 			$db_block->confirmations = $transaction['confirmations'];
 			$db_block->height = $blockext['height'];
 			$db_block->difficulty = $blockext['difficulty'];
 			$db_block->price = $coin->price;
-			$db_block->algo = $coin->algo;
-			$db_block->save();
+			if (!$db_block->save())
+				debuglog(__FUNCTION__.": unable to insert block!");
 
 			BackendBlockNew($coin, $db_block);
 		}
@@ -203,7 +327,7 @@ function MonitorBTC()
 	$coin = getdbosql('db_coins', "symbol='BTC'");
 	if(!$coin) return;
 
-	$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+	$remote = new WalletRPC($coin);
 	if(!$remote) return;
 
 	$mostrecent = 0;
@@ -219,7 +343,7 @@ function MonitorBTC()
 		if(!isset($transaction['blockhash'])) continue;
 		if($transaction['confirmations'] == 0) continue;
 		if($transaction['category'] != 'send') continue;
-		if($transaction['fee'] != -0.0001) continue;
+		//if($transaction['fee'] != -0.0001) continue;
 
 		debuglog(__FUNCTION__);
 		debuglog($transaction);
@@ -230,14 +354,6 @@ function MonitorBTC()
 			"<a href='$txurl'>{$transaction['address']}</a>");
 
 		if(!$b) debuglog('error sending email');
-
 	}
-
-
 }
-
-
-
-
-
 

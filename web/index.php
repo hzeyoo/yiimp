@@ -3,6 +3,7 @@
 //define('YII_DEBUG', true);
 
 require_once('serverconfig.php');
+require_once('yaamp/defaultconfig.php');
 require_once('yaamp/ui/app.php');
 
 if(isset($_SERVER['HTTP_X_FORWARDED_FOR']))

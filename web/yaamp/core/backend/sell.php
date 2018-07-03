@@ -14,7 +14,7 @@ function sellCoinToExchange($coin)
 {
 	if($coin->dontsell) return;
 
-	$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+	$remote = new WalletRPC($coin);
 
 	$info = $remote->getinfo();
 	if(!$info || !$info['balance']) return false;

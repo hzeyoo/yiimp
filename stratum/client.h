@@ -15,6 +15,7 @@ struct YAAMP_ALGO
 
 	double diff_multiplier;
 	double factor;
+	YAAMP_HASH_FUNCTION merkle_func;
 
 	double profit;
 	double rent;
@@ -30,6 +31,9 @@ struct YAAMP_CLIENT_ALGO
 
 #define YAAMP_JOB_MAXHISTORY	16
 
+#define MIN_ADDRESS_LEN 30 /* BTC len can be as few as 26 chars, but gen. 33 or 34 */
+#define MAX_ADDRESS_LEN 35 /* DCR */
+
 class YAAMP_CLIENT: public YAAMP_OBJECT
 {
 public:
@@ -37,6 +41,7 @@ public:
 //	YAAMP_SOURCE *source;
 
 	char notify_id[1024];
+	int64_t reqid; // ask request id
 
 	int created;
 	int last_best;
@@ -46,6 +51,7 @@ public:
 
 	int userid;
 	int workerid;
+	int coinid;
 	bool logtraffic;
 
 	int id_int;
@@ -88,12 +94,19 @@ public:
 
 	YAAMP_CLIENT_ALGO algos_subscribed[YAAMP_MAXALGOS];
 	int job_history[YAAMP_JOB_MAXHISTORY];
+
+	int64_t shares;
+	int stats;
+
+	int donation;
+	int broadcast_timeouts;
 };
 
 inline void client_delete(YAAMP_OBJECT *object)
 {
 	YAAMP_CLIENT *client = (YAAMP_CLIENT *)object;
 	socket_close(client->sock);
+	client->sock = NULL;
 
 	delete client;
 }
@@ -130,13 +143,19 @@ void client_initialize_difficulty(YAAMP_CLIENT *client);
 //////////////////////////////////////////////////////////////////////////
 
 int client_call(YAAMP_CLIENT *client, const char *method, const char *format, ...);
+int client_ask(YAAMP_CLIENT *client, const char *method, const char *format, ...);
+
 void client_dump_all();
 
 int client_send_result(YAAMP_CLIENT *client, const char *format, ...);
 int client_send_error(YAAMP_CLIENT *client, int error, const char *string);
 
+bool client_ask_stats(YAAMP_CLIENT *client);
+
 bool client_submit(YAAMP_CLIENT *client, json_value *json_params);
 void *client_thread(void *p);
+
+void db_check_user_input(char* input);
 
 //void source_prune();
 

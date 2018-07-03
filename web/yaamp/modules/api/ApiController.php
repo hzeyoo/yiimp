@@ -12,13 +12,18 @@ class ApiController extends CommonController
 	{
 		if(!LimitRequest('api-status', 10)) return;
 
-		echo "{";
+		$stats = array();
 		foreach(yaamp_get_algos() as $i=>$algo)
 		{
-			if($i) echo ", ";
-
-			$coins = controller()->memcache->get_database_count_ex("api_status_coins-$algo",
+			$coins = (int) controller()->memcache->get_database_count_ex("api_status_coins-$algo",
 				'db_coins', "enable and visible and auto_ready and algo=:algo", array(':algo'=>$algo));
+
+			if (!$coins) continue;
+
+			$workers = (int) controller()->memcache->get_database_scalar("api_status_workers-$algo",
+				"select COUNT(id) FROM workers WHERE algo=:algo",
+				array(':algo'=>$algo)
+			);
 
 			$hashrate = controller()->memcache->get_database_scalar("api_status_hashrate-$algo",
 				"select hashrate from hashrate where algo=:algo order by time desc limit 1", array(':algo'=>$algo));
@@ -28,7 +33,7 @@ class ApiController extends CommonController
 
 			$price = bitcoinvaluetoa(take_yaamp_fee($price/1000, $algo));
 
-			$rental = controller()->memcache->get_database_scalar("api_status_price-$algo",
+			$rental = controller()->memcache->get_database_scalar("api_status_rental-$algo",
 				"select rent from hashrate where algo=:algo order by time desc limit 1", array(':algo'=>$algo));
 
 			$rental = bitcoinvaluetoa($rental);
@@ -43,34 +48,103 @@ class ApiController extends CommonController
 			$total1 = controller()->memcache->get_database_scalar("api_status_total-$algo",
 				"select sum(amount*price) from blocks where category!='orphan' and time>$t and algo=:algo", array(':algo'=>$algo));
 
-			$hashrate1 = controller()->memcache->get_database_scalar("api_status_avghashrate-$algo",
+			$hashrate1 = (double) controller()->memcache->get_database_scalar("api_status_avghashrate-$algo",
 				"select avg(hashrate) from hashrate where time>$t and algo=:algo", array(':algo'=>$algo));
 
-//			$btcmhday1 = $hashrate1 != 0? bitcoinvaluetoa($total1 / $hashrate1 * 1000000): '0.00000000';
-			if($algo == 'sha256')
-				$btcmhday1 = $hashrate1 != 0? mbitcoinvaluetoa($total1 / $hashrate1 * 1000000 * 1000000): '0';
-			else
-				$btcmhday1 = $hashrate1 != 0? mbitcoinvaluetoa($total1 / $hashrate1 * 1000000 * 1000): '0';
+			$algo_unit_factor = yaamp_algo_mBTC_factor($algo);
+			$btcmhday1 = $hashrate1 > 0 ? mbitcoinvaluetoa($total1 / $hashrate1 * 1000000 * 1000 * $algo_unit_factor) : 0;
 
 			$fees = yaamp_fee($algo);
 			$port = getAlgoPort($algo);
-			if($port == '-') $port = 0;
 
-			echo "\"$algo\": ";
-			echo "{";
-			echo "\"name\": \"$algo\", ";
-			echo "\"port\": $port, ";
-			echo "\"coins\": $coins, ";
-			echo "\"fees\": $fees, ";
-			echo "\"hashrate\": $hashrate, ";
-			echo "\"estimate_current\": $price, ";
-			echo "\"estimate_last24h\": $avgprice, ";
-			echo "\"actual_last24h\": $btcmhday1, ";
-			echo "\"rental_current\": $rental";
-			echo "}";
+			$stat  = array(
+				"name" => $algo,
+				"port" => (int) $port,
+				"coins" => $coins,
+				"fees" => (double) $fees,
+				"hashrate" => (double) $hashrate,
+				"workers" => (int) $workers,
+				"estimate_current" => $price,
+				"estimate_last24h" => $avgprice,
+				"actual_last24h" => $btcmhday1,
+				"rental_current" => $rental,
+			);
+			$stats[$algo] = $stat;
 		}
 
-		echo "}";
+		ksort($stats);
+		echo json_encode($stats);
+	}
+
+	public function actionCurrencies()
+	{
+		$memcache = controller()->memcache->memcache;
+
+		$json = memcache_get($memcache, "api_currencies");
+		if (empty($json)) {
+
+			if(!LimitRequest('api-currencies', 10)) return;
+
+			$data = array();
+			$coins = getdbolist('db_coins', "enable AND visible AND auto_ready AND IFNULL(algo,'PoS')!='PoS' ORDER BY symbol");
+			foreach ($coins as $coin)
+			{
+				$symbol = $coin->symbol;
+
+				$last = dborow("SELECT height, time FROM blocks ".
+					"WHERE coin_id=:id AND category IN ('immature','generate') ORDER BY height DESC LIMIT 1",
+					array(':id'=>$coin->id)
+				);
+				$lastblock = (int) arraySafeVal($last,'height');
+				$timesincelast = $timelast = (int) arraySafeVal($last,'time');
+				if ($timelast > 0) $timesincelast = time() - $timelast;
+
+				$workers = (int) dboscalar("SELECT count(W.userid) AS workers FROM workers W ".
+					"INNER JOIN accounts A ON A.id = W.userid ".
+					"WHERE W.algo=:algo AND A.coinid IN (:id, 6)", // 6: btc id
+					array(':algo'=>$coin->algo, ':id'=>$coin->id)
+				);
+
+				$since = $timelast ? $timelast : time() - 60*60;
+				$shares = dborow("SELECT count(id) AS shares, SUM(difficulty) AS coin_hr FROM shares WHERE time>$since AND algo=:algo AND coinid IN (0,:id)",
+					array(':id'=>$coin->id,':algo'=>$coin->algo)
+				);
+
+				// Coin hashrate, we only store the hashrate per algo in the db,
+				// we need to compute the % of the coin compared to others with the same algo
+				if ($workers > 0) {
+
+					$algohr = (double) dboscalar("SELECT SUM(difficulty) AS algo_hr FROM shares WHERE time>$since AND algo=:algo",array(':algo'=>$coin->algo));
+					$factor = ($algohr > 0 && !empty($shares)) ? (double) $shares['coin_hr'] / $algohr : 1.;
+					$algo_hashrate = controller()->memcache->get_database_scalar("api_status_hashrate-{$coin->algo}",
+						"SELECT hashrate FROM hashrate WHERE algo=:algo ORDER BY time DESC LIMIT 1", array(':algo'=>$coin->algo)
+					);
+
+				} else {
+					$factor = $algo_hashrate = 0;
+				}
+
+				$data[$symbol] = array(
+					'algo' => $coin->algo,
+					'port' => getAlgoPort($coin->algo),
+					'name' => $coin->name,
+					'height' => (int) $coin->block_height,
+					'workers' => $workers,
+					'shares' =>  (int) arraySafeVal($shares,'shares'),
+					'hashrate' => round($factor * $algo_hashrate),
+					//'percent' => round($factor * 100, 1),
+					'lastblock' => $lastblock,
+					'timesincelast' => $timesincelast,
+				);
+
+				if (!empty($coin->symbol2))
+					$data[$symbol]['symbol'] = $coin->symbol2;
+			}
+			$json = json_encode($data);
+			memcache_set($memcache, "api_currencies", $json, MEMCACHE_COMPRESSED, 15);
+		}
+
+		echo str_replace("},","},\n", $json);
 	}
 
 	public function actionWallet()
@@ -113,8 +187,8 @@ class ApiController extends CommonController
 
 		$total_unsold = yaamp_convert_earnings_user($user, "status!=2");
 
-		$total_paid = bitcoinvaluetoa(controller()->memcache->get_database_scalar("api_wallet_paid-$user->id",
-			"select sum(amount) from payouts where account_id=$user->id"));
+		$total_paid = bitcoinvaluetoa(controller()->memcache->get_database_scalar("api_wallet_paid-".$user->id,
+			"SELECT SUM(amount) FROM payouts WHERE account_id=".$user->id));
 
 		$balance = bitcoinvaluetoa($user->balance);
 		$total_unpaid = bitcoinvaluetoa($balance + $total_unsold);
@@ -124,7 +198,7 @@ class ApiController extends CommonController
 		if(!$coin) return;
 
 		echo "{";
-		echo "\"currency\": \"$coin->symbol\", ";
+		echo "\"currency\": ".json_encode($coin->symbol).", ";
 		echo "\"unsold\": $total_unsold, ";
 		echo "\"balance\": $balance, ";
 		echo "\"unpaid\": $total_unpaid, ";
@@ -134,7 +208,7 @@ class ApiController extends CommonController
 		echo "\"miners\": ";
 		echo "[";
 
-		$workers = getdbolist('db_workers', "userid=$user->id order by password");
+		$workers = getdbolist('db_workers', "userid={$user->id} ORDER BY password");
 		foreach($workers as $i=>$worker)
 		{
 			$user_rate1 = yaamp_worker_rate($worker->id, $worker->algo);
@@ -143,14 +217,14 @@ class ApiController extends CommonController
 			if($i) echo ", ";
 
 			echo "{";
-			echo "\"version\": \"$worker->version\", ";
-			echo "\"password\": \"$worker->password\", ";
-			echo "\"ID\": \"$worker->worker\", ";
+			echo "\"version\": ".json_encode($worker->version).", ";
+			echo "\"password\": ".json_encode($worker->password).", ";
+			echo "\"ID\": ".json_encode($worker->worker).", ";
 			echo "\"algo\": \"$worker->algo\", ";
-			echo "\"difficulty\": $worker->difficulty, ";
-			echo "\"subscribe\": $worker->subscribe, ";
-			echo "\"accepted\": $user_rate1, ";
-			echo "\"rejected\": $user_rate1_bad";
+			echo "\"difficulty\": ".doubleval($worker->difficulty).", ";
+			echo "\"subscribe\": ".intval($worker->subscribe).", ";
+			echo "\"accepted\": ".round($user_rate1,3).", ";
+			echo "\"rejected\": ".round($user_rate1_bad,3);
 			echo "}";
 		}
 
@@ -292,7 +366,7 @@ class ApiController extends CommonController
 // 	$uptime = system('uptime');
 // 	$name = system('hostname');
 
-// 	fetch_url("http://yiimp.ccminer.org/api/nodereport?name=$name&uptime=$uptime");
+// 	fetch_url("http://".YAAMP_SITE_URL."/api/nodereport?name=$name&uptime=$uptime");
 // }
 
 

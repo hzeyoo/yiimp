@@ -68,6 +68,8 @@ void clientlog(YAAMP_CLIENT *client, const char *format, ...);
 vector<string> merkle_steps(vector<string> input);
 string merkle_with_first(vector<string> steps, string f);
 
+//////////////////////////////////////////////////////////////////////////
+
 bool base58_decode(const char *input, char *output);
 
 void base64_encode(char *base64, const char *normal);
@@ -95,6 +97,7 @@ double target_to_diff(uint64_t target);
 uint64_t get_hash_difficulty(unsigned char *input);
 
 long long current_timestamp();
+long long current_timestamp_dms();
 
 void string_lower(char *s);
 void string_upper(char *s);
@@ -121,7 +124,7 @@ static inline uint16_t le16dec(const void *pp)
 }
 #endif
 
-
-
-
-
+static inline uint32_t bswap32(uint32_t x) {
+	__asm__ __volatile__ ("bswapl %0" : "=r" (x) : "0" (x));
+	return x;
+}

@@ -978,3 +978,50 @@ void json_value_free (json_value * value)
    json_value_free_ex (&settings, value);
 }
 
+char* json_dumps(json_value * value, int opt)
+{
+   return strdup(""); // unsupported
+}
+
+int json_integer_value(const json_value *json)
+{
+   json_int_t n;
+   if(!json_is_integer(json))
+      return 0;
+
+   n = *(json);
+
+   return (int) n;
+}
+
+char* json_string_value(const json_value *json)
+{
+   if(!json_is_string(json))
+      return 0;
+
+   return json->u.string.ptr;
+}
+
+double json_double_value(const json_value *json)
+{
+   double r = 0.;
+   if(json_is_double(json))
+      r = *(json);
+   else if (json_is_integer(json))
+      r = (double) json_integer_value(json);
+
+   return r;
+}
+
+json_value* json_get_val(json_value *obj, const char *key)
+{
+   if (obj->type != json_object)
+      return NULL;
+
+   for (unsigned int i = 0; i < obj->u.object.length; i++)
+      if (!strcmp(obj->u.object.values[i].name, key))
+         return obj->u.object.values[i].value;
+
+   return NULL;
+}
+

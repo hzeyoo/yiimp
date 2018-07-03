@@ -28,8 +28,10 @@ char g_stratum_algo[1024];
 double g_stratum_difficulty;
 
 int g_stratum_max_ttf;
+int g_stratum_max_cons = 5000;
 bool g_stratum_reconnect;
 bool g_stratum_renting;
+bool g_autoexchange = true;
 
 time_t g_last_broadcasted = 0;
 YAAMP_DB *g_db = NULL;
@@ -39,6 +41,8 @@ pthread_mutex_t g_nonce1_mutex;
 pthread_mutex_t g_job_create_mutex;
 
 struct ifaddrs *g_ifaddr;
+
+volatile bool g_exiting = false;
 
 void *stratum_thread(void *p);
 void *monitor_thread(void *p);
@@ -79,11 +83,6 @@ static void neoscrypt_hash(const char* input, char* output, uint32_t len)
 	neoscrypt((unsigned char *)input, (unsigned char *)output, 0x80000620);
 }
 
-static void lyra2_hash(const char* input, char* output, uint32_t len)
-{
-	lyra2re_hash(input, output);
-}
-
 YAAMP_ALGO g_algos[] =
 {
 	{"sha256", sha256_double_hash, 1, 0, 0},
@@ -96,21 +95,49 @@ YAAMP_ALGO g_algos[] =
 	{"x13", x13_hash, 1, 0, 0},
 	{"x14", x14_hash, 1, 0, 0},
 	{"x15", x15_hash, 1, 0, 0},
+	{"x17", x17_hash, 1, 0, 0},
 
-	{"lyra2", lyra2_hash, 0x80, 0, 0},
-	{"blake", blake_hash, 1, 0, 0},
+	{"x11evo", x11evo_hash, 1, 0, 0},
+	{"xevan", xevan_hash, 0x100, 0, 0},
+
+	{"lyra2", lyra2re_hash, 0x80, 0, 0},
+	{"lyra2v2", lyra2v2_hash, 0x100, 0, 0},
+
+	{"blake", blake_hash, 1, 0 },
+	{"blakecoin", blakecoin_hash, 1 /*0x100*/, 0, sha256_hash_hex },
+	{"blake2s", blake2s_hash, 1, 0 },
+	{"vanilla", blakecoin_hash, 1, 0 },
+	{"decred", decred_hash, 1, 0 },
+
 	{"fresh", fresh_hash, 0x100, 0, 0},
 	{"quark", quark_hash, 1, 0, 0},
 	{"nist5", nist5_hash, 1, 0, 0},
 	{"qubit", qubit_hash, 1, 0, 0},
-	{"groestl", groestl_hash, 1, 0, 0},
+	{"groestl", groestl_hash, 0x100, 0, sha256_hash_hex }, /* groestlcoin */
+	{"dmd-gr", groestl_hash, 0x100, 0, 0}, /* diamond (double groestl) */
+	{"myr-gr", groestlmyriad_hash, 1, 0, 0}, /* groestl + sha 64 */
 	{"skein", skein_hash, 1, 0, 0},
-	{"keccak", keccak_hash, 1, 0, 0},
+	{"keccak", keccak256_hash, 0x80, 0, sha256_hash_hex },
 
-//	{"zr5", zr5_hash, 0x10000, 0, 0},
-//	{"whirlpoolx", whirlpoolx_hash, 1, 0, 0},
-//	{"jha", jha_hash, 1, 0, 0},
-//	{"m7", NULL, 1, 0},
+	{"bmw", bmw_hash, 1, 0, 0},
+	{"lbry", lbry_hash, 0x100, 0, 0},
+	{"luffa", luffa_hash, 1, 0, 0},
+	{"penta", penta_hash, 1, 0, 0},
+	{"skein2", skein2_hash, 1, 0, 0},
+	{"yescrypt", yescrypt_hash, 0x10000, 0, 0},
+	{"zr5", zr5_hash, 1, 0, 0},
+
+	{"hive", hive_hash, 0x10000, 0, 0},
+	{"m7m", m7m_hash, 0x10000, 0, 0},
+	{"veltor", veltor_hash, 1, 0, 0},
+	{"velvet", velvet_hash, 0x10000, 0, 0},
+	{"argon2", argon2_hash, 0x10000, 0, sha256_hash_hex },
+
+	{"sib", sib_hash, 1, 0, 0},
+
+	{"whirlcoin", whirlpool_hash, 1, 0, sha256_hash_hex }, /* old sha merkleroot */
+	{"whirlpool", whirlpool_hash, 1, 0 }, /* sha256d merkleroot */
+	{"whirlpoolx", whirlpoolx_hash, 1, 0, 0},
 
 	{"", NULL, 0, 0},
 };
@@ -143,6 +170,11 @@ int main(int argc, char **argv)
 
 	initlog(argv[1]);
 
+#ifdef NO_EXCHANGE
+	// todo: init with a db setting or a yiimp shell command
+	g_autoexchange = false;
+#endif
+
 	char configfile[1024];
 	sprintf(configfile, "%s.conf", argv[1]);
 
@@ -154,7 +186,6 @@ int main(int argc, char **argv)
 	}
 
 	g_tcp_port = iniparser_getint(ini, "TCP:port", 3333);
-
 	strcpy(g_tcp_server, iniparser_getstring(ini, "TCP:server", NULL));
 	strcpy(g_tcp_password, iniparser_getstring(ini, "TCP:password", NULL));
 
@@ -165,6 +196,7 @@ int main(int argc, char **argv)
 
 	strcpy(g_stratum_algo, iniparser_getstring(ini, "STRATUM:algo", NULL));
 	g_stratum_difficulty = iniparser_getdouble(ini, "STRATUM:difficulty", 16);
+	g_stratum_max_cons = iniparser_getint(ini, "STRATUM:max_cons", 5000);
 	g_stratum_max_ttf = iniparser_getint(ini, "STRATUM:max_ttf", 0x70000000);
 	g_stratum_reconnect = iniparser_getint(ini, "STRATUM:reconnect", true);
 	g_stratum_renting = iniparser_getint(ini, "STRATUM:renting", true);
@@ -176,8 +208,8 @@ int main(int argc, char **argv)
 	if(!g_current_algo) yaamp_error("invalid algo");
 	if(!g_current_algo->hash_function) yaamp_error("no hash function");
 
-	struct rlimit rlim_files = {0x10000, 0x10000};
-	setrlimit(RLIMIT_NOFILE, &rlim_files);
+//	struct rlimit rlim_files = {0x10000, 0x10000};
+//	setrlimit(RLIMIT_NOFILE, &rlim_files);
 
 	struct rlimit rlim_threads = {0x8000, 0x8000};
 	setrlimit(RLIMIT_NPROC, &rlim_threads);
@@ -213,10 +245,10 @@ int main(int argc, char **argv)
 	pthread_t thread2;
 	pthread_create(&thread2, NULL, stratum_thread, NULL);
 
-	while(1)
-	{
-		sleep(20);
+	sleep(20);
 
+	while(!g_exiting)
+	{
 		db_register_stratum(db);
 		db_update_workers(db);
 		db_update_algos(db);
@@ -249,9 +281,16 @@ int main(int argc, char **argv)
 		object_prune(&g_list_worker, worker_delete);
 		object_prune(&g_list_share, share_delete);
 		object_prune(&g_list_submit, submit_delete);
+
+		if (!g_exiting) sleep(20);
 	}
 
+	stratumlog("closing database...\n");
 	db_close(db);
+
+	pthread_join(thread2, NULL);
+	db_close(g_db); // client threads (called by stratum one)
+
 	return 0;
 }
 
@@ -259,12 +298,13 @@ int main(int argc, char **argv)
 
 void *monitor_thread(void *p)
 {
-	while(1)
+	while(!g_exiting)
 	{
 		sleep(120);
 
 		if(g_last_broadcasted + YAAMP_MAXJOBDELAY < time(NULL))
 		{
+			g_exiting = true;
 			stratumlog("%s dead lock, exiting...\n", g_current_algo->name);
 			exit(1);
 		}
@@ -295,7 +335,7 @@ void *stratum_thread(void *p)
 
 	/////////////////////////////////////////////////////////////////////////
 
-	while(1)
+	while(!g_exiting)
 	{
 		int sock = accept(listen_sock, NULL, NULL);
 		if(sock <= 0)
@@ -316,7 +356,4 @@ void *stratum_thread(void *p)
 		pthread_detach(thread);
 	}
 }
-
-
-
 

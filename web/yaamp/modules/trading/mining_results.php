@@ -29,7 +29,10 @@ $table = array(
 	'lyra2'=>9,
 );
 
-$res = fetch_url("https://www.nicehash.com/api?method=orders.get&algo={$table[$algo]}");
+$res = false;
+if (isset($table[$algo]))
+	$res = fetch_url("https://www.nicehash.com/api?method=orders.get&algo={$table[$algo]}");
+
 if(!$res) return;
 
 $a = json_decode($res);

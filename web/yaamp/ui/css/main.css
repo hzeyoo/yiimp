@@ -209,17 +209,20 @@ hr
 	padding: 5px;
 }
 
-.ssrow:hover
+/* ---------------------------------------------- */
+
+.red
 {
-	background-color: #E3F0F8;
+	color: red;
 }
 
-.ssselected
+.green
 {
-	background-color: #d3e0e8;
+	color: green;
 }
 
-
-
-
+.blue
+{
+	color: blue;
+}
 

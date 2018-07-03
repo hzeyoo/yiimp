@@ -1,19 +1,22 @@
 <?php
-	// FINAL TESTED CODE - Created by Compcentral
+// FINAL TESTED CODE - Created by Compcentral
 
-	// NOTE: currency pairs are reverse of what most exchanges use...
-	//       For instance, instead of XPM_BTC, use BTC_XPM
+// NOTE: currency pairs are reverse of what most exchanges use...
+//       For instance, instead of XPM_BTC, use BTC_XPM
 
-	class poloniex {
-		protected $api_key = "";
-		protected $api_secret = "";
+class poloniex {
+		protected $api_key = '';
+		protected $api_secret = '';
 		protected $trading_url = "https://poloniex.com/tradingApi";
 		protected $public_url = "https://poloniex.com/public";
 
-// 		public function __construct($api_key, $api_secret) {
-// 			$this->api_key = $api_key;
-// 			$this->api_secret = $api_secret;
-// 		}
+		public function __construct() {
+			require_once('/etc/yiimp/keys.php');
+			if (defined('EXCH_POLONIEX_SECRET')) {
+				$this->api_key = EXCH_POLONIEX_KEY;
+				$this->api_secret = EXCH_POLONIEX_SECRET;
+			}
+		}
 
 		private function query(array $req = array()) {
 			// API settings
@@ -46,6 +49,7 @@
 			curl_setopt($ch, CURLOPT_URL, $this->trading_url);
 			curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
 			curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
 
 			// run the query
@@ -85,6 +89,22 @@
 			);
 		}
 
+		public function get_complete_balances() {
+			return $this->query(
+				array(
+					'command' => 'returnCompleteBalances'
+				)
+			);
+		}
+
+		public function get_available_balances() {
+			return $this->query(
+				array(
+					'command' => 'returnAvailableAccountBalances',
+				)
+			);
+		}
+
 		public function get_deposit_addresses() {
 			return $this->query(
 				array(
@@ -94,7 +114,7 @@
 		}
 
 		public function generate_address($currency) {
-			debuglog("generate_address($currency)");
+			debuglog("poloniex: generate address $currency");
 			return $this->query(
 				array(
 					'command' => 'generateNewAddress',
@@ -237,6 +257,5 @@
 
 			return $tot_btc;
 		}
-	}
 
-
+}

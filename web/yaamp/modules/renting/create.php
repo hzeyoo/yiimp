@@ -19,7 +19,7 @@ if(!$b)
 $btc = getdbosql('db_coins', "symbol='BTC'");
 if(!$btc) return;
 
-$remote = new Bitcoin($btc->rpcuser, $btc->rpcpasswd, $btc->rpchost, $btc->rpcport);
+$remote = new WalletRPC($btc);
 $renter = new db_renters;
 
 $renter->created = time();

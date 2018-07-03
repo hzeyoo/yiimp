@@ -100,11 +100,30 @@ int client_call(YAAMP_CLIENT *client, const char *method, const char *format, ..
 	return socket_send(client->sock, "{\"id\":null,\"method\":\"%s\",\"params\":%s}\n", method, buffer);
 }
 
+int client_ask(YAAMP_CLIENT *client, const char *method, const char *format, ...)
+{
+	char buffer[YAAMP_SMALLBUFSIZE];
+	va_list args;
+	int64_t id = client->shares;
+
+	va_start(args, format);
+	vsprintf(buffer, format, args);
+	va_end(args);
+
+	int ret = socket_send(client->sock, "{\"id\":%d,\"method\":\"%s\",\"params\":%s}\n", id, method, buffer);
+	if (ret == -1) {
+		debuglog("unable to ask %s\n", method);
+		return 0; // -errno
+	}
+	client->reqid = id;
+	return id;
+}
+
 void client_block_ip(YAAMP_CLIENT *client, const char *reason)
 {
 	char buffer[1024];
 
-	sprintf(buffer, "iptables -A INPUT -s %s -j DROP", client->sock->ip);
+	sprintf(buffer, "iptables -A INPUT -s %s -p tcp --dport %d -j REJECT", client->sock->ip, g_tcp_port);
 	int s = system(buffer);
 
 	stratumlog("%s %s blocked (%s)\n", client->sock->ip, client->username, reason);

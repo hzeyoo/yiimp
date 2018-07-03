@@ -1,6 +1,16 @@
 
 #include "stratum.h"
 
+// sql injection security, unwanted chars
+void db_check_user_input(char* input)
+{
+	char *p = NULL;
+	if (input && input[0]) {
+		p = strpbrk(input, " \"'\\");
+		if(p) *p = '\0';
+	}
+}
+
 void db_add_user(YAAMP_DB *db, YAAMP_CLIENT *client)
 {
 	db_clean_string(db, client->username);
@@ -9,15 +19,44 @@ void db_add_user(YAAMP_DB *db, YAAMP_CLIENT *client)
 	db_clean_string(db, client->notify_id);
 	db_clean_string(db, client->worker);
 
-	char symbol[16] = "";
+	char symbol[16] = { 0 };
 	char *p = strstr(client->password, "c=");
 	if(!p) p = strstr(client->password, "s=");
 	if(p) strncpy(symbol, p+2, 15);
 	p = strchr(symbol, ',');
-	if(p) *p = 0;
+	if(p) *p = '\0';
 
-//	debuglog("user %s %s\n", client->username, symbol);
-	db_query(db, "select id, is_locked, logtraffic from accounts where username='%s'", client->username);
+	bool guest = false;
+	int gift = -1;
+#ifdef ALLOW_CUSTOM_DONATIONS
+	// donation percent
+	p = strstr(client->password, "g=");
+	if(p) gift = atoi(p+2);
+	if(gift > 100) gift = 100;
+#endif
+
+	db_check_user_input(client->username);
+	if(strlen(client->username) < MIN_ADDRESS_LEN) {
+		// allow benchmark / test / donate usernames
+		if (!strcmp(client->username, "benchmark") || !strcmp(client->username, "donate") || !strcmp(client->username, "test")) {
+			guest = true;
+			if (g_list_coind.first) {
+				CLI li = g_list_coind.first;
+				YAAMP_COIND *coind = (YAAMP_COIND *)li->data;
+				if (!strlen(client->worker)) strcpy(client->worker, client->username);
+				strcpy(client->username, coind->wallet);
+				if (!strcmp(client->username, "benchmark")) strcat(client->password, ",stats");
+				if (!strcmp(client->username, "donate")) gift = 100;
+			}
+		}
+		if (!guest) {
+			debuglog("Invalid user address '%s'\n", client->username);
+			return;
+		}
+	}
+
+	// debuglog("user %s %s gives %d %\n", client->username, symbol, gift);
+	db_query(db, "SELECT id, is_locked, logtraffic, coinid, donation FROM accounts WHERE username='%s'", client->username);
 
 	MYSQL_RES *result = mysql_store_result(&db->mysql);
 	if(!result) return;
@@ -29,21 +68,29 @@ void db_add_user(YAAMP_DB *db, YAAMP_CLIENT *client)
 		else client->userid = atoi(row[0]);
 
 		client->logtraffic = row[2] && atoi(row[2]);
+		client->coinid = row[3] ? atoi(row[3]) : 0;
+		if (gift == -1) gift = row[4] ? atoi(row[4]) : 0; // keep current
 	}
 
 	mysql_free_result(result);
 
+	db_check_user_input(symbol);
+
+	if (gift < 0) gift = 0;
+	client->donation = gift;
+
 	if(client->userid == -1)
 		return;
 
-	else if(client->userid == 0)
+	else if(client->userid == 0 && strlen(client->username) >= MIN_ADDRESS_LEN)
 	{
-		db_query(db, "insert into accounts (username, coinsymbol, balance) values ('%s', '%s', 0)", client->username, symbol);
+		db_query(db, "INSERT INTO accounts (username, coinsymbol, balance, donation) values ('%s', '%s', 0, %d)",
+			client->username, symbol, gift);
 		client->userid = (int)mysql_insert_id(&db->mysql);
 	}
 
 	else
-		db_query(db, "update accounts set coinsymbol='%s' where id=%d", symbol, client->userid);
+		db_query(db, "UPDATE accounts SET coinsymbol='%s', donation=%d WHERE id=%d", symbol, gift, client->userid);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -53,7 +100,7 @@ void db_clear_worker(YAAMP_DB *db, YAAMP_CLIENT *client)
 	if(!client->workerid)
 		return;
 
-	db_query(db, "delete from workers where id=%d", client->workerid);
+	db_query(db, "DELETE FROM workers WHERE id=%d", client->workerid);
 	client->workerid = 0;
 }
 
@@ -62,8 +109,14 @@ void db_add_worker(YAAMP_DB *db, YAAMP_CLIENT *client)
 	db_clear_worker(db, client);
 	int now = time(NULL);
 
-	db_query(db, "insert into workers (userid, ip, name, difficulty, version, password, worker, algo, time, pid) "\
-		"values (%d, '%s', '%s', %f, '%s', '%s', '%s', '%s', %d, %d)",
+	/* maybe not required here (already made), but... */
+	db_check_user_input(client->username);
+	db_check_user_input(client->version);
+	db_check_user_input(client->password);
+	db_check_user_input(client->worker);
+
+	db_query(db, "INSERT INTO workers (userid, ip, name, difficulty, version, password, worker, algo, time, pid) "\
+		"VALUES (%d, '%s', '%s', %f, '%s', '%s', '%s', '%s', %d, %d)",
 		client->userid, client->sock->ip, client->username, client->difficulty_actual,
 		client->version, client->password, client->worker, g_stratum_algo, now, getpid());
 
@@ -90,7 +143,7 @@ void db_update_workers(YAAMP_DB *db)
 		client->speed *= 0.8;
 		if(client->difficulty_written == client->difficulty_actual) continue;
 
-		db_query(db, "update workers set difficulty=%f, subscribe=%d where id=%d",
+		db_query(db, "UPDATE workers SET difficulty=%f, subscribe=%d WHERE id=%d",
 			client->difficulty_actual, client->extranonce_subscribe, client->workerid);
 		client->difficulty_written = client->difficulty_actual;
 	}
@@ -99,6 +152,15 @@ void db_update_workers(YAAMP_DB *db)
 	g_list_client.Leave();
 }
 
+void db_init_user_coinid(YAAMP_DB *db, YAAMP_CLIENT *client)
+{
+	if (!client->userid)
+		return;
 
-
+	if (!client->coinid)
+		db_query(db, "UPDATE accounts SET coinid=NULL WHERE id=%d", client->userid);
+	else
+		db_query(db, "UPDATE accounts SET coinid=%d WHERE id=%d AND IFNULL(coinid,0) = 0",
+			client->coinid, client->userid);
+}
 

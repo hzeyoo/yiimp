@@ -20,18 +20,22 @@ $total_invalid = dboscalar("select sum(difficulty) * $target / $interval / 1000 
 
 WriteBoxHeader("Miners Version ($algo)");
 
-//echo "<br><table class='dataGrid2'>";
-showTableSorter('maintable2');
-echo "<thead>";
-echo "<tr>";
-echo "<th>Version</th>";
-echo "<th align=right>Count</th>";
-echo "<th align=right>Extranonce</th>";
-echo "<th align=right>Percent</th>";
-echo "<th align=right>Hashrate*</th>";
-echo "<th align=right>Reject</th>";
-echo "</tr>";
-echo "</thead><tbody>";
+//showTableSorter('maintable2');
+echo <<<end
+<br/>
+<table id="maintable2" class="dataGrid2">
+<thead>
+<tr>
+<th>Version</th>
+<th align=right>Count</th>
+<th align=right>Donators</th>
+<th align=right>Extranonce</th>
+<th align=right>Percent</th>
+<th align=right>Hashrate*</th>
+<th align=right>Reject</th>
+</tr>
+</thead><tbody>
+end;
 
 $error_tab = array(
 	20=>'Invalid nonce size',
@@ -43,6 +47,8 @@ $error_tab = array(
 	26=>'Low difficulty share',
 );
 
+$total_donators = 0;
+
 $versions = dbolist("select version, count(*) as c, sum(subscribe) as s from workers where algo=:algo group by version order by c desc", array(':algo'=>$algo));
 foreach($versions as $item)
 {
@@ -51,16 +57,16 @@ foreach($versions as $item)
 	$extranonce = $item['s'];
 
 	$hashrate = dboscalar("select sum(difficulty) * $target / $interval / 1000 from shares where valid and time>$delay and
-		workerid in (select id from workers where algo=:algo and version='$version')", array(':algo'=>$algo));
+		workerid IN (select id from workers where algo=:algo and version=:version)", array(':algo'=>$algo, ':version'=>$version));
 
 	$invalid = dboscalar("select sum(difficulty) * $target / $interval / 1000 from shares where not valid and time>$delay and
-		workerid in (select id from workers where algo=:algo and version='$version')", array(':algo'=>$algo));
+		workerid IN (select id from workers where algo=:algo and version=:version)", array(':algo'=>$algo, ':version'=>$version));
 
 	$title = '';
 	foreach($error_tab as $i=>$s)
 	{
 		$invalid2 = dboscalar("select sum(difficulty) * $target / $interval / 1000 from shares where error=$i and time>$delay and
-			workerid in (select id from workers where algo=:algo and version='$version')", array(':algo'=>$algo));
+			workerid in (select id from workers where algo=:algo and version=:version)", array(':algo'=>$algo, ':version'=>$version));
 
 		if($invalid2)
 		{
@@ -68,6 +74,13 @@ foreach($versions as $item)
 			$title .= "$bad2 - $s\n";
 		}
 	}
+
+	$donators = dboscalar(
+		"SELECT COUNT(*) AS donators FROM workers W LEFT JOIN accounts A ON A.id = W.userid".
+		" WHERE W.algo=:algo AND W.version=:version AND A.donation > 0",
+		array(':algo'=>$algo, ':version'=>$version)
+	);
+	$total_donators += $donators;
 
 	$percent = $total_hashrate&&$hashrate? round($hashrate * 100 / $total_hashrate, 2).'%': '';
 	$bad = ($hashrate+$invalid)? round($invalid*100/($hashrate+$invalid), 1).'%': '';
@@ -77,6 +90,7 @@ foreach($versions as $item)
 	echo "<tr class='ssrow'>";
 	echo "<td><b>$version</b></td>";
 	echo "<td align=right>$count</td>";
+	echo "<td align=right>$donators</td>";
 	echo "<td align=right>$extranonce</td>";
 	echo "<td align=right>$percent</td>";
 	echo "<td align=right>$hashrate</td>";
@@ -105,6 +119,7 @@ $total_hashrate = Itoa2($total_hashrate).'h/s';
 echo "<tr class='ssrow'>";
 echo "<td><b>Total</b></td>";
 echo "<td align=right>$total_workers</td>";
+echo "<td align=right>$total_donators</td>";
 echo "<td align=right>$total_extranonce</td>";
 echo "<td align=right></td>";
 echo "<td align=right>$total_hashrate</td>";

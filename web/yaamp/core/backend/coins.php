@@ -35,7 +35,7 @@ function BackendCoinsUpdate()
 		$coin = getdbo('db_coins', $coin->id);
 		if(!$coin) continue;
 
-		$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+		$remote = new WalletRPC($coin);
 
 		$info = $remote->getinfo();
 		if(!$info)
@@ -56,11 +56,9 @@ function BackendCoinsUpdate()
 		else
 			$difficulty = $remote->getdifficulty();
 
-		if(is_array($difficulty))
-		{
-			$coin->difficulty = $difficulty['proof-of-work'];
-			if(isset($difficulty['proof-of-stake']))
-				 $coin->difficulty_pos = $difficulty['proof-of-stake'];
+		if(is_array($difficulty)) {
+			$coin->difficulty = arraySafeVal($difficulty,'proof-of-work');
+			$coin->difficulty_pos = arraySafeVal($difficulty,'proof-of-stake');
 		}
 		else
 			$coin->difficulty = $difficulty;
@@ -74,13 +72,15 @@ function BackendCoinsUpdate()
 		$coin->errors = isset($info['errors'])? $info['errors']: '';
 		$coin->txfee = isset($info['paytxfee'])? $info['paytxfee']: '';
 		$coin->connections = isset($info['connections'])? $info['connections']: '';
+		$coin->multialgos = (int) isset($info['pow_algo_id']);
 		$coin->balance = isset($info['balance'])? $info['balance']: 0;
+		$coin->stake = isset($info['stake'])? $info['stake'] : $coin->stake;
 		$coin->mint = dboscalar("select sum(amount) from blocks where coin_id=$coin->id and category='immature'");
 
 		if(empty($coin->master_wallet))
 		{
-			$coin->master_wallet = $remote->getaccountaddress('');
-		//	debuglog($coin->master_wallet);
+			if ($coin->rpcencoding == 'DCR' && empty($coin->account)) $coin->account = 'default';
+			$coin->master_wallet = $remote->getaccountaddress($coin->account);
 		}
 
 		if(empty($coin->rpcencoding))
@@ -88,6 +88,12 @@ function BackendCoinsUpdate()
 			$difficulty = $remote->getdifficulty();
 			if(is_array($difficulty))
 				$coin->rpcencoding = 'POS';
+			else if ($coin->symbol == 'DCR')
+				$coin->rpcencoding = 'DCR';
+			else if ($coin->symbol == 'ETH')
+				$coin->rpcencoding = 'GETH';
+			else if ($coin->symbol == 'NIRO')
+				$coin->rpcencoding = 'NIRO';
 			else
 				$coin->rpcencoding = 'POW';
 		}
@@ -148,6 +154,11 @@ function BackendCoinsUpdate()
 				}
 			}
 
+			else if ($coin->rpcencoding == 'GETH' || $coin->rpcencoding == 'NIRO')
+			{
+				$coin->auto_ready = ($coin->connections > 0);
+			}
+
 			else if(strcasecmp($remote->error, 'method not found') == 0)
 			{
 				$template = $remote->getmemorypool();
@@ -161,13 +172,37 @@ function BackendCoinsUpdate()
 						$target = decode_compact($template['bits']);
 						$coin->difficulty = target_to_diff($target);
 					}
-				}
-
-				else
-				{
+				} else {
 					$coin->auto_ready = false;
 					$coin->errors = $remote->error;
 				}
+			}
+
+			else if ($coin->symbol == 'ZEC' || $coin->rpcencoding == 'ZEC')
+			{
+				if($template && isset($template['coinbasetxn']))
+				{
+					// no coinbasevalue in ZEC blocktemplate :/
+					$txn = $template['coinbasetxn'];
+					$coin->charity_amount = arraySafeVal($txn,'foundersreward',0)/100000000;
+					$coin->reward = $coin->charity_amount * 4 + arraySafeVal($txn,'fee',0)/100000000;
+					// getmininginfo show current diff, getinfo the last block one
+					$mininginfo = $remote->getmininginfo();
+					$coin->difficulty = ArraySafeVal($mininginfo,'difficulty',$coin->difficulty);
+					//$target = decode_compact($template['bits']);
+					//$diff = target_to_diff($target); // seems not standard 0.358557563 vs 187989.937 in getmininginfo
+					//target 00000002c0930000000000000000000000000000000000000000000000000000 => 0.358557563 (bits 1d02c093)
+					//$diff = hash_to_difficulty($coin, $template['target']);
+					//debuglog("ZEC target {$template['bits']} -> $diff");
+				} else {
+					$coin->auto_ready = false;
+					$coin->errors = $remote->error;
+				}
+			}
+
+			else if ($coin->rpcencoding == 'DCR')
+			{
+				$coin->auto_ready = ($coin->connections > 0);
 			}
 
 			else

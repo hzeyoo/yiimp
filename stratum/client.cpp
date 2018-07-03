@@ -26,7 +26,7 @@ bool client_suggest_target(YAAMP_CLIENT *client, json_value *json_params)
 
 bool client_subscribe(YAAMP_CLIENT *client, json_value *json_params)
 {
-	if(client_find_my_ip(client->sock->ip)) return false;
+	//if(client_find_my_ip(client->sock->ip)) return false;
 	get_next_extraonce1(client->extranonce1_default);
 
 	client->extranonce2size_default = YAAMP_EXTRANONCE2_SIZE;
@@ -34,6 +34,14 @@ bool client_subscribe(YAAMP_CLIENT *client, json_value *json_params)
 
 	strcpy(client->extranonce1, client->extranonce1_default);
 	client->extranonce2size = client->extranonce2size_default;
+
+	// decred uses an extradata field in block header, 2 first uint32 are set by the miner
+	if (g_current_algo->name && !strcmp(g_current_algo->name,"decred")) {
+		memset(client->extranonce1, '0', sizeof(client->extranonce1));
+		memcpy(&client->extranonce1[16], client->extranonce1_default, YAAMP_EXTRANONCE2_SIZE*2);
+		client->extranonce1[24] = '\0';
+		client->extranonce2size = client->extranonce2size_default = 12;
+	}
 
 	get_random_key(client->notify_id);
 
@@ -44,6 +52,10 @@ bool client_subscribe(YAAMP_CLIENT *client, json_value *json_params)
 
 		if(strstr(client->version, "NiceHash") || strstr(client->version, "proxy") || strstr(client->version, "/3."))
 			client->reconnectable = false;
+
+		if(strstr(client->version, "ccminer")) client->stats = true;
+		if(strstr(client->version, "cpuminer-multi")) client->stats = true;
+		if(strstr(client->version, "cpuminer-opt")) client->stats = true;
 	}
 
 	if(json_params->u.array.length>1)
@@ -107,10 +119,59 @@ bool client_subscribe(YAAMP_CLIENT *client, json_value *json_params)
 	debuglog("new client with nonce %s\n", client->extranonce1);
 #endif
 
-	client_send_result(client, "[[[\"mining.set_difficulty\",\"%s\"],[\"mining.notify\",\"%s\"]],\"%s\",%d]",
-		client->notify_id, client->notify_id, client->extranonce1, client->extranonce2size);
+	client_send_result(client, "[[[\"mining.set_difficulty\",\"%.3g\"],[\"mining.notify\",\"%s\"]],\"%s\",%d]",
+		client->difficulty_actual, client->notify_id, client->extranonce1, client->extranonce2size);
 
 	return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////
+bool client_validate_user_address(YAAMP_CLIENT *client)
+{
+	if (!client->coinid) {
+		for(CLI li = g_list_coind.first; li; li = li->next) {
+			YAAMP_COIND *coind = (YAAMP_COIND *)li->data;
+			// debuglog("user %s testing on coin %s ...\n", client->username, coind->symbol);
+			if(!coind_can_mine(coind)) continue;
+			if(strlen(g_current_algo->name) && strcmp(g_current_algo->name, coind->algo)) continue;
+			if(coind_validate_user_address(coind, client->username)) {
+				debuglog("new user %s for coin %s\n", client->username, coind->symbol);
+				client->coinid = coind->id;
+				// update the db now to prevent addresses conflicts
+				CommonLock(&g_db_mutex);
+				db_init_user_coinid(g_db, client);
+				CommonUnlock(&g_db_mutex);
+				return true;
+			}
+		}
+	}
+
+	if (!client->coinid) {
+		return false;
+	}
+
+	YAAMP_COIND *coind = (YAAMP_COIND *)object_find(&g_list_coind, client->coinid);
+	if (!coind) {
+		clientlog(client, "unable to find the wallet for coinid %d...", client->coinid);
+		return false;
+	} else {
+		if(g_current_algo && strlen(g_current_algo->name) && strcmp(g_current_algo->name, coind->algo)) {
+			clientlog(client, "%s address is on the wrong coin %s, reset to auto...", client->username, coind->symbol);
+			client->coinid = 0;
+			CommonLock(&g_db_mutex);
+			db_init_user_coinid(g_db, client);
+			CommonUnlock(&g_db_mutex);
+			return false;
+		}
+	}
+
+	bool isvalid = coind_validate_user_address(coind, client->username);
+	if (isvalid) {
+		client->coinid = coind->id;
+	} else {
+		clientlog(client, "unable to verify %s address for user coinid %d...", coind->symbol, client->coinid);
+	}
+	return isvalid;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -120,21 +181,38 @@ bool client_authorize(YAAMP_CLIENT *client, json_value *json_params)
 	if(json_params->u.array.length>1)
 		strncpy(client->password, json_params->u.array.values[1]->u.string.ptr, 1023);
 
+	if (g_list_client.count >= g_stratum_max_cons) {
+		client_send_error(client, 21, "Server full");
+		return false;
+	}
+
 	if(json_params->u.array.length>0)
 	{
 		strncpy(client->username, json_params->u.array.values[0]->u.string.ptr, 1023);
 
-		client->username[34] = 0;
-		strncpy(client->worker, client->username+35, 1023);
+		db_check_user_input(client->username);
+		int len = strlen(client->username);
+		if (!len)
+			return false;
 
-//		debuglog("%s\n", client->username);
-//		debuglog("%s\n", client->worker);
+		char *sep = strpbrk(client->username, ".,;:");
+		if (sep) {
+			*sep = '\0';
+			strncpy(client->worker, sep+1, 1023-len);
+			if (strlen(client->username) > MAX_ADDRESS_LEN) return false;
+		} else if (len > MAX_ADDRESS_LEN) {
+			return false;
+		}
 	}
 
 	bool reset = client_initialize_multialgo(client);
 	if(reset) return false;
 
 	client_initialize_difficulty(client);
+
+#ifdef CLIENT_DEBUGLOG_
+	debuglog("new client %s, %s, %s\n", client->username, client->password, client->version);
+#endif
 
 	if(!client->userid || !client->workerid)
 	{
@@ -144,7 +222,7 @@ bool client_authorize(YAAMP_CLIENT *client, json_value *json_params)
 		if(client->userid == -1)
 		{
 			CommonUnlock(&g_db_mutex);
-		//	client_block_ip(client, "account locked");
+			client_block_ip(client, "account locked");
 			clientlog(client, "account locked");
 
 			return false;
@@ -154,16 +232,24 @@ bool client_authorize(YAAMP_CLIENT *client, json_value *json_params)
 		CommonUnlock(&g_db_mutex);
 	}
 
-#ifdef CLIENT_DEBUGLOG_
-	debuglog("new client %s, %s, %s\n", client->username, client->password, client->version);
-#endif
+	// when auto exchange is disabled, only authorize good wallet address...
+	if (!g_autoexchange && !client_validate_user_address(client)) {
+
+		clientlog(client, "bad mining address %s", client->username);
+		client_send_result(client, "false");
+
+		CommonLock(&g_db_mutex);
+		db_clear_worker(g_db, client);
+		CommonUnlock(&g_db_mutex);
+
+		return false;
+	}
 
 	client_send_result(client, "true");
 	client_send_difficulty(client, client->difficulty_actual);
 
 	if(client->jobid_locked)
 		job_send_jobid(client, client->jobid_locked);
-
 	else
 		job_send_last(client);
 
@@ -175,7 +261,7 @@ bool client_authorize(YAAMP_CLIENT *client, json_value *json_params)
 
 bool client_update_block(YAAMP_CLIENT *client, json_value *json_params)
 {
-	// password, id, block
+	// password, id, block hash
 	if(json_params->u.array.length < 3)
 	{
 		clientlog(client, "update block, bad params");
@@ -191,15 +277,20 @@ bool client_update_block(YAAMP_CLIENT *client, json_value *json_params)
 	YAAMP_COIND *coind = (YAAMP_COIND *)object_find(&g_list_coind, json_params->u.array.values[1]->u.integer, true);
 	if(!coind) return false;
 
+	const char* hash = json_params->u.array.values[2]->u.string.ptr;
+
 #ifdef CLIENT_DEBUGLOG_
-	debuglog("new block for %s ", coind->name);
-	debuglog("%s\n", json_params->u.array.values[2]->u.string.ptr);
+	debuglog("notify: new %s block %s\n", coind->symbol, hash);
 #endif
 
 	coind->newblock = true;
 	coind->notreportingcounter = 0;
 
-	block_confirm(coind->id, json_params->u.array.values[2]->u.string.ptr);
+	if (!strcmp("DCR", coind->rpcencoding)) {
+		usleep(300*YAAMP_MS);
+	}
+
+	block_confirm(coind->id, hash);
 
 	coind_create_job(coind);
 	object_unlock(coind);
@@ -215,6 +306,35 @@ bool client_update_block(YAAMP_CLIENT *client, json_value *json_params)
 
 	job_signal();
 	return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////
+
+bool client_ask_stats(YAAMP_CLIENT *client)
+{
+	int id;
+	if (!client->stats) return false;
+	id = client_ask(client, "client.get_stats", "[]");
+	return true;
+}
+
+static bool client_store_stats(YAAMP_CLIENT *client, json_value *result)
+{
+	if (json_typeof(result) != json_object)
+		return false;
+
+	json_value *val = json_get_val(result, "type");
+	if (val && json_is_string(val)) {
+		debuglog("received stats of type %s\n", json_string_value(val));
+		//if (!strcmp("gpu", json_string_value(val))) {
+			CommonLock(&g_db_mutex);
+			db_store_stats(g_db, client, result);
+			CommonUnlock(&g_db_mutex);
+		//}
+		return true;
+	}
+
+	return false;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -314,7 +434,7 @@ void *client_thread(void *p)
 	client->shares_per_minute = YAAMP_SHAREPERSEC;
 	client->last_submit_time = current_timestamp();
 
-	while(1)
+	while(!g_exiting)
 	{
 		if(client->submit_bad > 1024)
 		{
@@ -333,6 +453,15 @@ void *client_thread(void *p)
 		client->id_str = json_get_string(json, "id");
 
 		const char *method = json_get_string(json, "method");
+
+		if (!method && client->stats && client->id_int == client->reqid)
+		{
+			json_value *result = json_get_object(json, "result");
+			if (result) client_store_stats(client, result);
+			json_value_free(json);
+			continue;
+		}
+
 		if(!method)
 		{
 			json_value_free(json);
@@ -359,6 +488,9 @@ void *client_thread(void *p)
 		else if(!strcmp(method, "mining.authorize"))
 			b = client_authorize(client, json_params);
 
+		else if(!strcmp(method, "mining.ping"))
+			b = client_send_result(client, "\"pong\"");
+
 		else if(!strcmp(method, "mining.submit"))
 			b = client_submit(client, json_params);
 
@@ -382,7 +514,7 @@ void *client_thread(void *p)
 
 		else if(!strcmp(method, "getwork"))
 		{
-			clientlog(client, "using getwork");
+			clientlog(client, "using getwork"); // client using http:// url
 			break;
 		}
 
@@ -403,8 +535,11 @@ void *client_thread(void *p)
 #ifdef CLIENT_DEBUGLOG_
 	debuglog("client terminate\n");
 #endif
+	if(!client || client->deleted) {
+		pthread_exit(NULL);
+	}
 
-	if(client->sock->total_read == 0)
+	else if(client->sock->total_read == 0)
 		clientlog(client, "no data");
 
 	if(g_list_client.Find(client))
@@ -424,9 +559,4 @@ void *client_thread(void *p)
 
 	pthread_exit(NULL);
 }
-
-
-
-
-
 

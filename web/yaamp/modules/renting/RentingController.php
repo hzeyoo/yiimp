@@ -27,7 +27,7 @@ class RentingController extends CommonController
 
 	public function actionLogin()
 	{
-		$deposit = isset($_POST['deposit_address'])? substr($_POST['deposit_address'], 0, 34): '';
+		$deposit = isset($_POST['deposit_address'])? substr($_POST['deposit_address'], 0, 35): '';
 		$password = isset($_POST['deposit_password'])? substr($_POST['deposit_password'], 0, 64): '';
 
 		$renter = getdbosql('db_renters', "address=:address", array(':address'=>$deposit));
@@ -266,10 +266,10 @@ class RentingController extends CommonController
 
 	public function actionOrderSave()
 	{
-		$renter = getdbo('db_renters', XssFilter(getparam('order_renterid')));
+		$renter = getdbo('db_renters', XssFilter(''.getparam('order_renterid')));
 		if(!$renter || $renter->address != user()->getState('yaamp-deposit')) return;
 
-		$job = getdbo('db_jobs', XssFilter(getparam('order_id')));
+		$job = getdbo('db_jobs', XssFilter(''.getparam('order_id')));
 		if(!$job)
 		{
 			$job = new db_jobs;
@@ -284,7 +284,7 @@ class RentingController extends CommonController
 		$job->speed = getparam('order_speed')*1000000;
 
 		if(	empty($job->algo) || empty($job->username) || empty($job->password) || empty($job->price) ||
-			empty($job->speed) || empty(getparam('order_address')) || empty(getparam('order_host')))
+			empty($job->speed) || empty(''.getparam('order_address')) || empty(''.getparam('order_host')))
 		{
 			$this->redirect('/renting');
 			return;
@@ -325,10 +325,10 @@ class RentingController extends CommonController
 
 	public function actionOrderDialog()
 	{
-		$renter = getrenterparam(getparam('address'));
+		$renter = getrenterparam(''.getparam('address'));
 		if(!$renter) return;
 
-		$a = 'x11';
+		$a = YAAMP_DEFAULT_ALGO;
 		$server = '';
 		$username = '';
 		$password = 'xx';
@@ -390,7 +390,7 @@ end;
 
 	public function actionResetSpent()
 	{
-		$renter = getrenterparam(getparam('address'));
+		$renter = getrenterparam(''.getparam('address'));
 		if(!$renter) return;
 
 		$renter->custom_start = 0;
@@ -432,7 +432,7 @@ end;
 		$coin = getdbosql('db_coins', "symbol='BTC'");
 		if(!$coin) return;
 
-		$remote = new Bitcoin($coin->rpcuser, $coin->rpcpasswd, $coin->rpchost, $coin->rpcport);
+		$remote = new WalletRPC($coin);
 
 		$res = $remote->validateaddress($address);
 		if(!$res || !isset($res['isvalid']) || !$res['isvalid'])

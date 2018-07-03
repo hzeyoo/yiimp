@@ -16,6 +16,14 @@ static void job_mining_notify_buffer(YAAMP_JOB *job, char *buffer)
 {
 	YAAMP_JOB_TEMPLATE *templ = job->templ;
 
+	if (!strcmp(g_current_algo->name, "lbry")) {
+		sprintf(buffer, "{\"id\":null,\"method\":\"mining.notify\",\"params\":["
+			"\"%x\",\"%s\",\"%s\",\"%s\",\"%s\",[%s],\"%s\",\"%s\",\"%s\",true]}\n",
+			job->id, templ->prevhash_be, templ->claim_be, templ->coinb1, templ->coinb2,
+			templ->txmerkles, templ->version, templ->nbits, templ->ntime);
+		return;
+	}
+
 	sprintf(buffer, "{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"%x\",\"%s\",\"%s\",\"%s\",[%s],\"%s\",\"%s\",\"%s\",true]}\n",
 		job->id, templ->prevhash_be, templ->coinb1, templ->coinb2, templ->txmerkles, templ->version, templ->nbits, templ->ntime);
 }
@@ -76,8 +84,11 @@ void job_send_jobid(YAAMP_CLIENT *client, int jobid)
 
 void job_broadcast(YAAMP_JOB *job)
 {
-	int s1 = current_timestamp();
+	int s1 = current_timestamp_dms();
 	int count = 0;
+	struct timeval timeout;
+	timeout.tv_sec = 5;
+	timeout.tv_usec = 0;
 
 	YAAMP_JOB_TEMPLATE *templ = job->templ;
 
@@ -99,23 +110,40 @@ void job_broadcast(YAAMP_JOB *job)
 
 		client_adjust_difficulty(client);
 
-		socket_send_raw(client->sock, buffer, strlen(buffer));
+		setsockopt(client->sock->sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+		if (socket_send_raw(client->sock, buffer, strlen(buffer)) == -1) {
+			int err = errno;
+			client->broadcast_timeouts++;
+			clientlog(client, "unable to send job, sock err %d (%d times)", err, client->broadcast_timeouts);
+			// too much timeouts, disconnect him
+			if (client->broadcast_timeouts >= 3) {
+				shutdown(client->sock->sock, SHUT_RDWR);
+				if(client->workerid && !client->reconnecting) {
+				//	CommonLock(&g_db_mutex);
+					db_clear_worker(g_db, client);
+				//	CommonUnlock(&g_db_mutex);
+				}
+				object_delete(client);
+			}
+		}
 		count++;
 	}
 
 	g_list_client.Leave();
 	g_last_broadcasted = time(NULL);
 
-	int s2 = current_timestamp();
+	int s2 = current_timestamp_dms();
 	if(!count) return;
 
 	///////////////////////
 
 	uint64_t coin_target = decode_compact(templ->nbits);
+	if (templ->nbits && !coin_target) coin_target = 0xFFFF000000000000ULL; // under decode_compact min diff
 	double coin_diff = target_to_diff(coin_target);
 
-	debuglog("%s %d - diff %.9f job %x to %d/%d/%d clients, hash %.3f/%.3f in %d ms\n", job->name,
-		templ->height, coin_diff, job->id, count, job->count, g_list_client.count, job->speed, job->maxspeed, s2-s1);
+	debuglog("%s %d - diff %.9f job %x to %d/%d/%d clients, hash %.3f/%.3f in %.1f ms\n", job->name,
+		templ->height, coin_diff, job->id, count, job->count, g_list_client.count, job->speed, job->maxspeed, 0.1*(s2-s1));
 
 //	for(int i=0; i<templ->auxs_size; i++)
 //	{
