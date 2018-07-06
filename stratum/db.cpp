@@ -301,6 +301,7 @@ void db_update_coinds(YAAMP_DB *db)
 
 		if(row[31]) strcpy(coind->account, row[31]);
 		if(row[32]) coind->multialgos = atoi(row[32]);
+		if(row[33] && atoi(row[33]) > 0) g_stratum_max_cons = atoi(row[33]);
 		if(row[34] && atol(row[34]) > 0) g_max_shares = atol(row[34]);
 		if(row[35]) coind->usesegwit = atoi(row[35]) > 0;
 
